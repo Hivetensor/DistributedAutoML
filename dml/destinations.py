@@ -5,13 +5,15 @@ import os
 import tempfile
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 
 # import arweave
 import requests
 from huggingface_hub import HfApi
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 class PushDestination(ABC):
@@ -26,7 +28,7 @@ class PushDestination(ABC):
 
 class PushMixin:
     def push_to_remote(self, gene: Dict[str, Any], commit_message: str) -> None:
-        if not hasattr(self, 'push_destinations'):
+        if not hasattr(self, "push_destinations"):
             logging.warning("No push destinations defined")
             return
 
@@ -45,14 +47,16 @@ class StorageBase(PushDestination):
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "commit_message": commit_message,
             "version": "1.0",
-            "storage_type": self.__class__.__name__
+            "storage_type": self.__class__.__name__,
         }
 
-    def _prepare_content(self, gene: Dict[str, Any], commit_message: str) -> Dict[str, Any]:
+    def _prepare_content(
+        self, gene: Dict[str, Any], commit_message: str
+    ) -> Dict[str, Any]:
         return {
             "gene": gene,
             "metadata": self._prepare_metadata(commit_message),
-            "fitness": self._extract_fitness(commit_message)
+            "fitness": self._extract_fitness(commit_message),
         }
 
     def _extract_fitness(self, commit_message: str) -> Optional[float]:
@@ -76,7 +80,9 @@ class HuggingFacePushDestination(StorageBase):
 
         content = self._prepare_content(gene, commit_message)
 
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_file:
+        with tempfile.NamedTemporaryFile(
+            mode="w", delete=False, suffix=".json"
+        ) as temp_file:
             json.dump(content, temp_file)
             temp_path = temp_file.name
 
@@ -85,7 +91,7 @@ class HuggingFacePushDestination(StorageBase):
                 path_or_fileobj=temp_path,
                 path_in_repo="best_gene.json",
                 repo_id=self.repo_name,
-                commit_message=commit_message
+                commit_message=commit_message,
             )
             return self.verify(content)
         finally:
@@ -109,7 +115,7 @@ class GitHubPushDestination(StorageBase):
         self.api_base = f"https://api.github.com/repos/{repo_owner}/{repo_name}"
         self.headers = {
             "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json"
+            "Accept": "application/vnd.github.v3+json",
         }
 
     def push(self, gene: Dict[str, Any], commit_message: str) -> bool:
@@ -134,23 +140,20 @@ class GitHubPushDestination(StorageBase):
 
     def _get_current_file(self) -> Optional[Dict[str, Any]]:
         response = requests.get(
-            f"{self.api_base}/contents/best_gene.json",
-            headers=self.headers
+            f"{self.api_base}/contents/best_gene.json", headers=self.headers
         )
         return response.json() if response.status_code == 200 else None
 
     def _push_to_github(self, content: Dict[str, Any], sha: Optional[str]) -> None:
         data = {
             "message": content["metadata"]["commit_message"],
-            "content": base64.b64encode(json.dumps(content).encode()).decode()
+            "content": base64.b64encode(json.dumps(content).encode()).decode(),
         }
         if sha:
             data["sha"] = sha
 
         response = requests.put(
-            f"{self.api_base}/contents/best_gene.json",
-            headers=self.headers,
-            json=data
+            f"{self.api_base}/contents/best_gene.json", headers=self.headers, json=data
         )
 
         if response.status_code not in (200, 201):

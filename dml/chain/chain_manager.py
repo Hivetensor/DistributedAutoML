@@ -1,13 +1,13 @@
-#Thanks SN9
+# Thanks SN9
 
-import multiprocessing
-import functools
-import bittensor as bt
-import os
-import lzma
 import base64
+import functools
+import lzma
 import multiprocessing
-from typing import Optional, Any
+import os
+from typing import Any, Optional
+
+import bittensor as bt
 from bittensor.btlogging import logging
 
 
@@ -18,6 +18,7 @@ def _wrapped_func(func: functools.partial, queue: multiprocessing.Queue):
     except (Exception, BaseException) as e:
         # Catch exceptions here to add them to the queue.
         queue.put(e)
+
 
 def run_in_subprocess(func: functools.partial, ttl: int, mode="fork") -> Any:
     """Runs the provided function on a subprocess with 'ttl' seconds to complete.
@@ -62,7 +63,6 @@ class ChainMultiAddressStore:
         subtensor: bt.subtensor,
         subnet_uid: int,
         wallet: Optional[bt.wallet] = None,
-        
     ):
         self.subtensor = subtensor
         self.wallet = wallet
@@ -84,11 +84,7 @@ class ChainMultiAddressStore:
         # )
         # run_in_subprocess(partial, 60)
 
-        self.subtensor.commit(
-            self.wallet,
-            self.subnet_uid,
-            hf_repo
-        )
+        self.subtensor.commit(self.wallet, self.subnet_uid, hf_repo)
 
     def retrieve_hf_repo(self, hotkey: str) -> Optional[str]:
         """Retrieves and decompresses multiaddress on this subnet for specific hotkey"""
@@ -99,12 +95,13 @@ class ChainMultiAddressStore:
         # )
 
         try:
-            #metadata = run_in_subprocess(partial, 60)
-            metadata = bt.extrinsics.serving.get_metadata( self.subtensor, self.subnet_uid, hotkey)
+            # metadata = run_in_subprocess(partial, 60)
+            metadata = bt.extrinsics.serving.get_metadata(
+                self.subtensor, self.subnet_uid, hotkey
+            )
         except:
             metadata = None
             logging.warning(f"Failed to retreive multiaddress for: {hotkey}")
-            
 
         if not metadata:
             return None
@@ -122,6 +119,7 @@ class ChainMultiAddressStore:
             )
             return None
 
+
 # Synchronous test cases for ChainMultiAddressStore
 
 
@@ -129,36 +127,38 @@ import json
 import os
 from typing import Optional
 
+
 class LocalAddressStore:
     """Simulated local storage for storing and retrieving multiaddresses, using a file for persistence."""
 
-    def __init__(self, 
-    subtensor: bt.subtensor,
-    subnet_uid: int,
-    wallet: Optional[bt.wallet] = None,
+    def __init__(
+        self,
+        subtensor: bt.subtensor,
+        subnet_uid: int,
+        wallet: Optional[bt.wallet] = None,
     ):
         self.storage_file = "storage.json"
         self.wallet = wallet
         # Ensure the storage file exists
         if not os.path.exists(self.storage_file):
-            with open(self.storage_file, 'w') as file:
+            with open(self.storage_file, "w") as file:
                 json.dump({}, file)
 
     def _load_storage(self):
         """Loads the storage content from a file."""
-        with open(self.storage_file, 'r') as file:
+        with open(self.storage_file, "r") as file:
             return json.load(file)
 
     def _save_storage(self, storage):
         """Saves the updated storage content to a file."""
-        with open(self.storage_file, 'w') as file:
+        with open(self.storage_file, "w") as file:
             json.dump(storage, file)
 
     def store_hf_repo(self, hf_repo: str, hotkey):
         """Stores the Hugging Face repository link for a specific wallet."""
         if self.wallet is None:
             raise ValueError("No wallet available to write to the storage.")
-        
+
         storage = self._load_storage()
         storage[hotkey] = hf_repo
         self._save_storage(storage)
@@ -178,7 +178,9 @@ class LocalAddressStore:
 
 def test_store_multiaddress():
     """Verifies that the ChainMultiAddressStore can store data on the chain."""
-    multiaddress = "/ip4/198.51.100.0/tcp/4242/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N"
+    multiaddress = (
+        "/ip4/198.51.100.0/tcp/4242/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N"
+    )
 
     # Use a different subnet that does not leverage chain storage to avoid conflicts.
     subtensor = bt.subtensor()
@@ -200,7 +202,9 @@ def test_store_multiaddress():
 
 def test_retrieve_multiaddress():
     """Verifies that the ChainMultiAddressStore can retrieve data from the chain."""
-    expected_multiaddress = "/ip4/198.51.100.0/tcp/4242/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N"
+    expected_multiaddress = (
+        "/ip4/198.51.100.0/tcp/4242/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N"
+    )
 
     # Use a different subnet that does not leverage chain storage to avoid conflicts.
     subtensor = bt.subtensor()
@@ -214,12 +218,16 @@ def test_retrieve_multiaddress():
     # Retrieve the multiaddress from the chain.
     retrieved_multiaddress = address_store.retrieve_multiaddress(hotkey)
 
-    print(f"Retrieved multiaddress matches expected: {expected_multiaddress == retrieved_multiaddress}")
+    print(
+        f"Retrieved multiaddress matches expected: {expected_multiaddress == retrieved_multiaddress}"
+    )
 
 
 def test_roundtrip_multiaddress():
     """Verifies that the ChainMultiAddressStore can roundtrip data on the chain."""
-    multiaddress = "/ip4/198.51.100.0/tcp/4242/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N"
+    multiaddress = (
+        "/ip4/198.51.100.0/tcp/4242/p2p/QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N"
+    )
 
     # Use a different subnet that does not leverage chain storage to avoid conflicts.
     subtensor = bt.subtensor()
@@ -242,10 +250,8 @@ def test_roundtrip_multiaddress():
     print(f"Expecting matching multiaddress: {multiaddress == retrieved_multiaddress}")
 
 
-
 if __name__ == "__main__":
     # Can only commit data every ~20 minutes.
     # asyncio.run(test_roundtrip_model_metadata())
     # asyncio.run(test_store_model_metadata())
     test_retrieve_model_metadata()
-

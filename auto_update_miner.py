@@ -10,20 +10,22 @@ from typing import Optional
 # Define repository and script paths
 REPO_PATH = os.path.dirname(os.path.abspath(__file__))
 MAIN_SCRIPT_PATH = "neurons/miner.py"
-BRANCH = 'main'
+BRANCH = "main"
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 def run_git_command(command: list[str]) -> Optional[str]:
     """Run a git command and return its output."""
     try:
         result = subprocess.run(
-            ['git', '-C', REPO_PATH] + command,
+            ["git", "-C", REPO_PATH] + command,
             check=True,
             capture_output=True,
-            text=True
+            text=True,
         )
         return result.stdout.strip()
     except subprocess.CalledProcessError as e:
@@ -36,8 +38,9 @@ def get_local_version() -> Optional[str]:
     try:
         sys.path.insert(0, REPO_PATH)
         import dml.chain as chain
+
         importlib.reload(chain)  # Ensure we're getting the latest version
-        return getattr(chain, '__spec_version__', None)
+        return getattr(chain, "__spec_version__", None)
     except ImportError:
         logging.error("Failed to import dml.chain module")
         return None
@@ -47,14 +50,13 @@ def get_local_version() -> Optional[str]:
 
 def get_remote_version() -> Optional[str]:
     """More reliable remote version check."""
-    if run_git_command(['fetch']) is None:
+    if run_git_command(["fetch"]) is None:
         return None
 
     try:
-        remote_content = run_git_command([
-            'show',
-            f'origin/{BRANCH}:dml/chain/__init__.py'
-        ])
+        remote_content = run_git_command(
+            ["show", f"origin/{BRANCH}:dml/chain/__init__.py"]
+        )
         if not remote_content:
             return None
 
@@ -69,27 +71,27 @@ def get_remote_version() -> Optional[str]:
 
 def get_current_branch() -> Optional[str]:
     """Returns the current local git branch."""
-    return run_git_command(['rev-parse', '--abbrev-ref', 'HEAD'])
+    return run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
 
 
 def stash_changes() -> bool:
     """Stash local changes to avoid conflicts."""
-    return run_git_command(['stash']) is not None
+    return run_git_command(["stash"]) is not None
 
 
 def apply_stash() -> bool:
     """Apply stashed changes after update."""
-    return run_git_command(['stash', 'pop']) is not None
+    return run_git_command(["stash", "pop"]) is not None
 
 
 def switch_to_branch(branch_name: str) -> bool:
     """Switch to the specified branch."""
-    return run_git_command(['checkout', branch_name]) is not None
+    return run_git_command(["checkout", branch_name]) is not None
 
 
 def update_repo() -> bool:
     """Pull the latest changes from the repository."""
-    return run_git_command(['pull']) is not None
+    return run_git_command(["pull"]) is not None
 
 
 def run_main_script():
@@ -106,7 +108,9 @@ def run_main_script():
 def install_packages():
     """Runs pip install -e . to install the package in editable mode."""
     try:
-        result = subprocess.run(['pip', 'install', '-e', '.'], check=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["pip", "install", "-e", "."], check=True, capture_output=True, text=True
+        )
         logging.debug(result.stdout)
         logging.info("Package installed in editable mode successfully.")
     except subprocess.CalledProcessError as e:
@@ -117,7 +121,7 @@ def install_packages():
 def backup_current_state():
     """Create backup of current code state."""
     backup_dir = f"backup_{int(time.time())}"
-    run_git_command(['stash', 'push', '-m', f"Backup before update to {backup_dir}"])
+    run_git_command(["stash", "push", "-m", f"Backup before update to {backup_dir}"])
     return backup_dir
 
 
@@ -138,8 +142,8 @@ def verify_update():
 def rollback_update(backup_dir):
     """Rollback to previous state."""
     logging.info("Rolling back update...")
-    run_git_command(['reset', '--hard', 'HEAD@{1}'])
-    run_git_command(['stash', 'pop'])
+    run_git_command(["reset", "--hard", "HEAD@{1}"])
+    run_git_command(["stash", "pop"])
 
 
 def main():
@@ -165,7 +169,7 @@ def main():
                 if current_branch != BRANCH:
                     logging.info(f"Currently on branch {current_branch}.")
 
-                    status = run_git_command(['status', '--porcelain'])
+                    status = run_git_command(["status", "--porcelain"])
 
                     if status:
                         logging.info("Uncommitted changes found, stashing them.")
@@ -179,7 +183,9 @@ def main():
                         raise Exception("Failed to update repository.")
 
                     if not switch_to_branch(current_branch):
-                        raise Exception(f"Failed to switch back to {current_branch} branch.")
+                        raise Exception(
+                            f"Failed to switch back to {current_branch} branch."
+                        )
 
                     if status and not apply_stash():
                         raise Exception("Failed to apply stashed changes.")
@@ -197,7 +203,7 @@ def main():
 
                 # Restart the script with the new version
                 logging.info("Restarting script with updated version...")
-                os.execv(sys.executable, ['python'] + sys.argv)
+                os.execv(sys.executable, ["python"] + sys.argv)
 
             except Exception as e:
                 logging.error(f"Update failed: {e}")

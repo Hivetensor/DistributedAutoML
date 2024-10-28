@@ -1,7 +1,8 @@
-from dml.configs.general_config import GeneralConfig
 from dml.configs.bittensor_config import BittensorConfig
+from dml.configs.general_config import GeneralConfig
 from dml.configs.miner_config import MinerConfig
 from dml.configs.validator_config import ValidatorConfig
+
 
 class Config:
     def __init__(self):
@@ -28,5 +29,6 @@ class Config:
 
     def get_bittensor_config(self):
         return self.Bittensor.get_bittensor_config()
+
 
 config = Config()

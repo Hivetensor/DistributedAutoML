@@ -1,13 +1,15 @@
-import os
-import torch
 import hashlib
-from bittensor import logging
-from dotenv import load_dotenv
-from huggingface_hub import HfApi, Repository, HfFolder
-from huggingface_hub import hf_hub_download, scan_cache_dir
+import os
 import subprocess
 
+import torch
+from bittensor import logging
+from dotenv import load_dotenv
+from huggingface_hub import (HfApi, HfFolder, Repository, hf_hub_download,
+                             scan_cache_dir)
+
 load_dotenv()
+
 
 class HFManager:
     """
@@ -16,19 +18,18 @@ class HFManager:
 
     def __init__(
         self,
-        local_dir=".",#gradients local
+        local_dir=".",  # gradients local
         hf_token=os.getenv("HF_TOKEN"),
-        gene_repo_id=None,#gradients HF
-        model_dir=None,#averaged local
-        device="cuda"
+        gene_repo_id=None,  # gradients HF
+        model_dir=None,  # averaged local
+        device="cuda",
     ):
-    
         # Initializes the HFManager with the necessary repository and authentication details.
         self.gene_repo_id = gene_repo_id
-        
+
         self.hf_token = hf_token
         self.device = device
-        #self.local_dir = local_dir
+        # self.local_dir = local_dir
 
         # Define the local directory structure based on repository IDs but only do clone personal repo if miner
         if self.gene_repo_id != None:
@@ -39,13 +40,10 @@ class HFManager:
             )
             self.local_gene_dir = os.path.join(local_dir, gene_repo_id.split("/")[-1])
 
-     
-
         self.api = HfApi()
         # Get the latest commit SHA for synchronization checks
         self.latest_gene_commit_sha = self.get_latest_commit_sha(self.gene_repo_id)
 
-        
     @staticmethod
     def clear_hf_cache():
         # Get the cache directory
@@ -70,15 +68,13 @@ class HFManager:
         original_dir = os.getcwd()
         try:
             os.chdir(repo_path)
-            subprocess.run(['git', 'config', 'pull.rebase', 'true'], check=True)   
-            subprocess.run(['git', 'pull', '--force'], check=True)
-            subprocess.run(['git', 'lfs', 'prune'], check=True)
+            subprocess.run(["git", "config", "pull.rebase", "true"], check=True)
+            subprocess.run(["git", "pull", "--force"], check=True)
+            subprocess.run(["git", "lfs", "prune"], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Failed to prune Git LFS objects: {e}")
         finally:
             os.chdir(original_dir)
-
-
 
     def push_changes(self, file_to_send):
         """
@@ -88,20 +84,20 @@ class HFManager:
         try:
             # Stage the changes
             self.gradient_repo.git_add(file_to_send)
-            
-            
+
             # Commit with a unified message
             self.gradient_repo.git_commit("Squashed commits - update model gradients")
-            
+
             # Push the changes to the repository
             self.gradient_repo.git_push()
 
             self.api.super_squash_history(repo_id=self.my_repo_id)
-            
+
             # Prune unneeded Git LFS objects and pull the squashed version locally
-            self.git_prune_and_refresh(self.local_gradient_dir)  # Clean up unused LFS objects
-            
-            
+            self.git_prune_and_refresh(
+                self.local_gradient_dir
+            )  # Clean up unused LFS objects
+
         except Exception as e:
             print(f"Failed to push changes: {e}")
 
@@ -109,21 +105,21 @@ class HFManager:
         try:
             # Stage the changes
             self.model_repo.git_add(path_to_model)
-            
+
             # Squash commits into a single one before pushing
-            
+
             # Commit with a unified message
             self.model_repo.git_commit("Squashed commits - update model gradients")
-            
+
             self.model_repo.git_push()
 
             self.api.super_squash_history(repo_id=self.model_repo_id)
 
             # Prune unneeded Git LFS objects and pull the squashed version locally
             self.git_prune_and_refresh(self.model_dir)
-            
+
             # Push the changes to the repository
-            
+
         except Exception as e:
             print(f"Failed to push changes: {e}")
 
@@ -176,7 +172,7 @@ class HFManager:
         self.model_repo.git_pull()
 
     def receive_gradients(self, miner_repo_id, weights_file_name="weight_diff.pt"):
-        try: #TODO Add some garbage collection.
+        try:  # TODO Add some garbage collection.
             # Download the gradients file from Hugging Face Hub
             weights_file_path = hf_hub_download(
                 repo_id=miner_repo_id, filename=weights_file_name, use_auth_token=True
@@ -187,5 +183,3 @@ class HFManager:
             return miner_weights
         except Exception as e:
             logging.debug(f"Error receiving gradients from Hugging Face: {e}")
-
-

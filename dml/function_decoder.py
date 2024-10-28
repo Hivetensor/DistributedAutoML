@@ -1,103 +1,104 @@
 import numpy as np
 import torch
 
+
 class FunctionDecoder:
     def __init__(self):
         self.decoding_map = {
             ## Func, output, input1, input2
             0: (self.do_nothing, "scalar", None, None),
             1: (self.add_scalar, "scalar", "scalar", "scalar"),
-            2: (self.sub_scalar,"scalar", "scalar", "scalar"),
-            3: (self.multiply_scalar,"scalar","scalar","scalar"),
-            4: (self.divide_scalar,"scalar","scalar","scalar"),
-            5: (self.abs_scalar,"scalar","scalar", None),
-            6: (self.reciprocal_scalar,"scalar", "scalar", None),
-            7: (self.sin_scalar,"scalar", "scalar", None),
-            8: (self.cos_scalar,"scalar", "scalar", None),
-            9: (self.tan_scalar,"scalar", "scalar", None),
-            10: (self.arcsin_scalar,"scalar", "scalar", None),
-            11: (self.arccos_scalar,"scalar", "scalar", None),
-            12: (self.arctan_scalar,"scalar", "scalar", None),
-            13: (self.sigmoid,"scalar", "scalar", None),
-            14: (self.leaky_relu,"scalar", "scalar", None),
-            15: (self.relu,"scalar", "scalar", None),
-            16: (self.set_constant_scalar,"scalar", None, None), #TODO reflexive
+            2: (self.sub_scalar, "scalar", "scalar", "scalar"),
+            3: (self.multiply_scalar, "scalar", "scalar", "scalar"),
+            4: (self.divide_scalar, "scalar", "scalar", "scalar"),
+            5: (self.abs_scalar, "scalar", "scalar", None),
+            6: (self.reciprocal_scalar, "scalar", "scalar", None),
+            7: (self.sin_scalar, "scalar", "scalar", None),
+            8: (self.cos_scalar, "scalar", "scalar", None),
+            9: (self.tan_scalar, "scalar", "scalar", None),
+            10: (self.arcsin_scalar, "scalar", "scalar", None),
+            11: (self.arccos_scalar, "scalar", "scalar", None),
+            12: (self.arctan_scalar, "scalar", "scalar", None),
+            13: (self.sigmoid, "scalar", "scalar", None),
+            14: (self.leaky_relu, "scalar", "scalar", None),
+            15: (self.relu, "scalar", "scalar", None),
+            16: (self.set_constant_scalar, "scalar", None, None),  # TODO reflexive
             17: (self.gaussian_scalar, "scalar", None, None),
             18: (self.gaussian_matrix, "matrix", "matrix", None),
-            19: (self.uniform_scalar,"vector","vector" , None), 
-            20: (self.log_scalar,"scalar", "scalar", None),
-            21: (self.power_scalar,"scalar", "scalar", "scalar"),
-            22: (self.sqrt_scalar,"scalar", "scalar", None),
-            23: (self.max_scalar,"scalar", "scalar", "scalar"), 
-            24: (self.min_scalar,"scalar", "scalar", "scalar"), 
-            25: (self.mod_scalar,"scalar", "scalar", "scalar"), 
-            26: (self.sign_scalar,"scalar", "scalar", None),
-            27: (self.floor_scalar,"scalar", "scalar", None),
-            28: (self.ceil_scalar,"scalar", "scalar", None),
-            29: (self.round_scalar,"scalar", "scalar", None),
-            30: (self.hypot_scalar,"scalar", "scalar", "scalar"),
+            19: (self.uniform_scalar, "vector", "vector", None),
+            20: (self.log_scalar, "scalar", "scalar", None),
+            21: (self.power_scalar, "scalar", "scalar", "scalar"),
+            22: (self.sqrt_scalar, "scalar", "scalar", None),
+            23: (self.max_scalar, "scalar", "scalar", "scalar"),
+            24: (self.min_scalar, "scalar", "scalar", "scalar"),
+            25: (self.mod_scalar, "scalar", "scalar", "scalar"),
+            26: (self.sign_scalar, "scalar", "scalar", None),
+            27: (self.floor_scalar, "scalar", "scalar", None),
+            28: (self.ceil_scalar, "scalar", "scalar", None),
+            29: (self.round_scalar, "scalar", "scalar", None),
+            30: (self.hypot_scalar, "scalar", "scalar", "scalar"),
             31: (self.add_scalar, "vector", "vector", "vector"),
-            32: (self.sub_scalar,"vector", "vector", "vector"),
-            33: (self.multiply_scalar,"vector", "vector", "vector"),
-            34: (self.divide_scalar,"vector", "vector", "vector"),
-            35: (self.abs_scalar,"vector", "vector", "vector"),
-            36: (self.reciprocal_scalar,"vector", "vector", None),
-            37: (self.sin_scalar,"vector","vector", None),
-            38: (self.cos_scalar,"vector","vector", None),
-            39: (self.tan_scalar,"vector","vector", None),
-            40: (self.arcsin_scalar,"vector","vector", None),
-            41: (self.arccos_scalar,"vector","vector", None),
-            42: (self.arctan_scalar,"vector","vector", None),
-            43: (self.sigmoid,"vector","vector", None),
-            44: (self.leaky_relu,"vector","vector", None),
-            45: (self.relu,"vector","vector", None),
-            46: (self.stable_softmax,"vector","vector", None),
-            47: (self.mean_vector,"scalar","vector", None),
-            48: (self.std_axis,"scalar","vector", None),
-            49: (self.uniform_vector,"vector","vector", None),
-            50: (self.log_scalar,"vector","vector", None),
-            51: (self.power_scalar,"vector","vector", "vector"),
-            52: (self.sqrt_scalar,"vector","vector", None),
-            53: (self.max_vector,"scalar","vector",None),
-            54: (self.min_vector,"scalar","vector", None),
-            55: (self.mod_scalar,"vector","vector", "scalar"),
-            56: (self.sign_scalar,"vector","vector", None),
-            57: (self.floor_scalar,"vector","vector", None),
-            58: (self.ceil_scalar,"vector","vector", None),
-            59: (self.round_scalar,"vector","vector", None),
-            60: (self.hypot_scalar,"vector","vector", "vector"),
-            61: (self.dot_vector,"scalar","vector", "vector"),
-            62: (self.norm_vector, "scalar","vector", None),
-            63: (self.add_scalar, "matrix","matrix","matrix"),
-            64: (self.sub_scalar,"matrix","matrix","matrix"),
-            65: (self.multiply_scalar,"matrix","matrix","matrix"),
-            66: (self.divide_scalar,"matrix","matrix","matrix"),
-            67: (self.abs_scalar,"matrix","matrix",None),
-            68: (self.reciprocal_scalar,"matrix","matrix",None),
-            69: (self.sin_scalar,"matrix","matrix",None),
-            70: (self.cos_scalar,"matrix","matrix",None),
-            71: (self.tan_scalar,"matrix","matrix",None),
-            72: (self.arcsin_scalar,"matrix","matrix",None),
-            73: (self.arccos_scalar,"matrix","matrix",None),
-            74: (self.arctan_scalar,"matrix","matrix",None),
-            75: (self.sigmoid,"matrix","matrix",None),
-            76: (self.leaky_relu,"matrix","matrix",None),
-            77: (self.relu,"matrix","matrix",None),
-            78: (self.stable_softmax,"matrix","matrix",None),
-            79: (self.mean_vector,"scalar","matrix",None),
-            80: (self.std_axis,"vector","matrix",None),
-            81: (self.uniform_matrix,"matrix", "matrix", None),
-            82: (self.log_scalar,"matrix","matrix",None),
-            83: (self.power_scalar,"matrix","matrix","scalar"),
-            84: (self.sqrt_scalar,"matrix","matrix",None),
-            85: (self.max_vector,"scalar","matrix", None),
-            86: (self.min_vector,"scalar","matrix",None),
-            87: (self.mod_scalar,"matrix","matrix","scalar"),
-            88: (self.sign_scalar,"matrix","matrix",None),
-            89: (self.floor_scalar,"matrix","matrix",None),
-            90: (self.ceil_scalar,"matrix", "matrix", None),
-            91: (self.round_scalar,"matrix", "matrix", None),
-            92: (self.hypot_scalar,"matrix", "matrix", "matrix"),
+            32: (self.sub_scalar, "vector", "vector", "vector"),
+            33: (self.multiply_scalar, "vector", "vector", "vector"),
+            34: (self.divide_scalar, "vector", "vector", "vector"),
+            35: (self.abs_scalar, "vector", "vector", "vector"),
+            36: (self.reciprocal_scalar, "vector", "vector", None),
+            37: (self.sin_scalar, "vector", "vector", None),
+            38: (self.cos_scalar, "vector", "vector", None),
+            39: (self.tan_scalar, "vector", "vector", None),
+            40: (self.arcsin_scalar, "vector", "vector", None),
+            41: (self.arccos_scalar, "vector", "vector", None),
+            42: (self.arctan_scalar, "vector", "vector", None),
+            43: (self.sigmoid, "vector", "vector", None),
+            44: (self.leaky_relu, "vector", "vector", None),
+            45: (self.relu, "vector", "vector", None),
+            46: (self.stable_softmax, "vector", "vector", None),
+            47: (self.mean_vector, "scalar", "vector", None),
+            48: (self.std_axis, "scalar", "vector", None),
+            49: (self.uniform_vector, "vector", "vector", None),
+            50: (self.log_scalar, "vector", "vector", None),
+            51: (self.power_scalar, "vector", "vector", "vector"),
+            52: (self.sqrt_scalar, "vector", "vector", None),
+            53: (self.max_vector, "scalar", "vector", None),
+            54: (self.min_vector, "scalar", "vector", None),
+            55: (self.mod_scalar, "vector", "vector", "scalar"),
+            56: (self.sign_scalar, "vector", "vector", None),
+            57: (self.floor_scalar, "vector", "vector", None),
+            58: (self.ceil_scalar, "vector", "vector", None),
+            59: (self.round_scalar, "vector", "vector", None),
+            60: (self.hypot_scalar, "vector", "vector", "vector"),
+            61: (self.dot_vector, "scalar", "vector", "vector"),
+            62: (self.norm_vector, "scalar", "vector", None),
+            63: (self.add_scalar, "matrix", "matrix", "matrix"),
+            64: (self.sub_scalar, "matrix", "matrix", "matrix"),
+            65: (self.multiply_scalar, "matrix", "matrix", "matrix"),
+            66: (self.divide_scalar, "matrix", "matrix", "matrix"),
+            67: (self.abs_scalar, "matrix", "matrix", None),
+            68: (self.reciprocal_scalar, "matrix", "matrix", None),
+            69: (self.sin_scalar, "matrix", "matrix", None),
+            70: (self.cos_scalar, "matrix", "matrix", None),
+            71: (self.tan_scalar, "matrix", "matrix", None),
+            72: (self.arcsin_scalar, "matrix", "matrix", None),
+            73: (self.arccos_scalar, "matrix", "matrix", None),
+            74: (self.arctan_scalar, "matrix", "matrix", None),
+            75: (self.sigmoid, "matrix", "matrix", None),
+            76: (self.leaky_relu, "matrix", "matrix", None),
+            77: (self.relu, "matrix", "matrix", None),
+            78: (self.stable_softmax, "matrix", "matrix", None),
+            79: (self.mean_vector, "scalar", "matrix", None),
+            80: (self.std_axis, "vector", "matrix", None),
+            81: (self.uniform_matrix, "matrix", "matrix", None),
+            82: (self.log_scalar, "matrix", "matrix", None),
+            83: (self.power_scalar, "matrix", "matrix", "scalar"),
+            84: (self.sqrt_scalar, "matrix", "matrix", None),
+            85: (self.max_vector, "scalar", "matrix", None),
+            86: (self.min_vector, "scalar", "matrix", None),
+            87: (self.mod_scalar, "matrix", "matrix", "scalar"),
+            88: (self.sign_scalar, "matrix", "matrix", None),
+            89: (self.floor_scalar, "matrix", "matrix", None),
+            90: (self.ceil_scalar, "matrix", "matrix", None),
+            91: (self.round_scalar, "matrix", "matrix", None),
+            92: (self.hypot_scalar, "matrix", "matrix", "matrix"),
             93: (self.norm_vector, "scalar", "matrix", None),
             94: (self.multiply_scalar, "vector", "vector", "scalar"),
             95: (self.multiply_scalar, "matrix", "matrix", "scalar"),
@@ -109,14 +110,14 @@ class FunctionDecoder:
             100: (self.transpose, "matrix", "matrix", None),
             101: (self.gaussian_vector, "vector", "vector", None),
             102: (self.dot_vector, "scalar", "vector", "vector"),
-            #103: (self.matmul, "matrix", "matrix", "matrix"),
-        
+            # 103: (self.matmul, "matrix", "matrix", "matrix"),
         }
 
     @staticmethod
     def matmul(*args):
         x, y = args[0], args[1]
         return torch.matmul(x, y)
+
     @staticmethod
     def uniform_scalar(*args):
         low, high = args[2], args[3]
@@ -158,15 +159,15 @@ class FunctionDecoder:
         vector = args[0]
         vector[idx] = value
         return vector
-    
-    #TODO fix me
+
+    # TODO fix me
     @staticmethod
     def set_constant_matrix(*args):
         value = args[2]
         rows = args[3]
         cols = args[4]
         matrix = args[0]
-        matrix[rows,cols] = value
+        matrix[rows, cols] = value
         return matrix
 
     @staticmethod
@@ -175,7 +176,7 @@ class FunctionDecoder:
 
     @staticmethod
     def outer_product(*args):
-        return torch.outer(args[0],args[1])
+        return torch.outer(args[0], args[1])
 
     @staticmethod
     def broadcast_scalar_to_vector(*args):
@@ -201,11 +202,11 @@ class FunctionDecoder:
 
     @staticmethod
     def dot_vector(*args):
-        return torch.dot(args[0],args[1])
+        return torch.dot(args[0], args[1])
 
     @staticmethod
     def do_nothing(*args):
-        pass #TODO implement in executor
+        pass  # TODO implement in executor
 
     @staticmethod
     def identity_scalar(*args):
@@ -218,7 +219,7 @@ class FunctionDecoder:
     @staticmethod
     def sub_scalar(*args):
         return torch.subtract(args[0], args[1])
-    
+
     @staticmethod
     def multiply_scalar(*args):
         return torch.multiply(args[0], args[1])
@@ -288,7 +289,7 @@ class FunctionDecoder:
             return torch.mean(args[0], axis=0)
         except:
             return args[0]
-    
+
     @staticmethod
     def mean_vector(*args):
         return torch.mean(args[0])
@@ -374,6 +375,7 @@ class FunctionDecoder:
             if op in self.decoding_map:
                 decoded_functions.append(self.decoding_map[op])
         return decoded_functions, genome
+
 
 class NumpyFunctionDecoder:
     def __init__(self):
