@@ -242,7 +242,7 @@ class BaseMiner(ABC, PushMixin):
         self.measure_baseline()
         train_loader, val_loader = self.load_data()
         
-        checkpoint_file = os.path.join(LOCAL_STORAGE_PATH, 'evolution_checkpoint.pkl')
+        checkpoint_file = os.path.join(self.config.Miner.checkpoint_save_dir, 'evolution_checkpoint.pkl')
         
         # Check if checkpoint exists
         if os.path.exists(checkpoint_file):
@@ -607,9 +607,14 @@ class IslandMiner(BaseMiner):
                     island_stats[stats["island"]].append(stats)
                     logging.info(f"Island {stats['island']} Gen {stats['generation']}: "
                         f"Best={stats['best']:.4f} Avg={stats['avg']:.4f}")
-                    generation = int(stats['generation'])
+                    #generation = int(stats['generation'])
                 except:
                     time.sleep(0.1)
+                
+                if generation % self.config.Miner.check_registration_interval == 0:
+                    self.config.bittensor_network.sync()
+
+                generation += 1
                     
                 time.sleep(10)
 

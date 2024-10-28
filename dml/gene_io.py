@@ -25,7 +25,7 @@ def load_individual_from_json(data=None, pset=None, toolbox=None, filename = Non
             data = json.loads(fd.read())
         if type(data) == str:
             data = json.loads(data)
-        
+
     expr_str = data['expression']
     expr = SafePrimitiveTree.from_string(expr_str, pset, safe_eval)
     individual = creator.Individual(expr)
