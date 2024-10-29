@@ -2,11 +2,11 @@ import time
 
 class MinerConfig:
     #TODO limit validator memory allowed to prevent DOS attacks 
-    checkpoint_save_dir = "/home/mekaneeky/repos/dautoml/checkpoint/island"
+    checkpoint_save_dir = "checkpoints"
     check_registration_interval = 500
     evaluation_iterations = 10
     gp_tree_height = 90
-    generations = 10000
+    generations = 100000
     migration_interval = 100
     migrants_per_round = 10
     miner_type = "loss"
