@@ -30,7 +30,7 @@ from functools import partial
 from datasets import load_dataset
 from PIL import Image
 
-
+from dml.configs.miner_config import DatasetConfig
 from dml.models import BaselineNN, EvolvableNN, ModelFactory
 from dml.ops import create_pset
 from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
@@ -165,22 +165,17 @@ class DatasetMinerMixin:
 
 class BaseMiner(ABC, PushMixin):
     def __init__(self, config):
+        super().__init__(config)
         self.config = config
         self.device = self.config.device
         self.seed = self.config.Miner.seed
+        self.baseline_accuracy = 0.0
 
         set_seed(self.seed)
-    
-        #self.migration_server_url = config.Miner.migration_server_url
-        #self.migration_interval = config.Miner.migration_interval
         self.setup_logging()
         self.metrics_file = config.metrics_file
         self.metrics_data = []
-        
         self.push_destinations = []
-
-        
-        # DEAP utils
         self.initialize_deap()
 
         
@@ -245,17 +240,38 @@ class BaseMiner(ABC, PushMixin):
         self.emigrate_genes(best_gene)
         return self.immigrate_genes()
     
-    def create_baseline_model(self):
-        return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device)
+    def create_baseline_model(self, dataset_name):
+        """Create appropriate baseline model for each dataset"""
+        return ModelFactory.create_model(
+            dataset_name,
+            torch.nn.ReLU(),  # Default activation for baseline
+            **self._get_model_params(dataset_name)
+        ).to(self.device)
+    
 
     def measure_baseline(self):
+        """Measure baseline performance across all datasets"""
         set_seed(self.seed)
-        train_loader, val_loader = self.load_data()
-        baseline_model = self.create_baseline_model()
-        self.train(baseline_model, train_loader)
-        self.baseline_accuracy = self.evaluate(baseline_model, val_loader)
-        logging.info(f"Baseline model accuracy: {self.baseline_accuracy:.4f}")
-    
+        total_score = 0.0
+        total_weight = 0.0
+
+        for dataset_name, dataset_info in self.datasets.items():
+            try:
+                train_loader, val_loader = dataset_info['loader']()
+                baseline_model = self.create_baseline_model(dataset_name)
+                self.train(baseline_model, train_loader)
+                score = self.evaluate(baseline_model, val_loader)
+                weighted_score = score * dataset_info['config'].weight
+                
+                total_score += weighted_score
+                total_weight += dataset_info['config'].weight
+                
+                logging.info(f"Baseline {dataset_name} accuracy: {score:.4f}")
+            except Exception as e:
+                logging.error(f"Error measuring baseline for {dataset_name}: {str(e)}")
+
+        self.baseline_accuracy = total_score / total_weight if total_weight > 0 else 0.0
+        logging.info(f"Overall baseline accuracy: {self.baseline_accuracy:.4f}")    
 
     def save_checkpoint(self, population, hof, best_individual_all_time, generation, random_state, torch_rng_state, numpy_rng_state, checkpoint_file):
         # Convert population and hof individuals to string representations and save fitness
@@ -330,21 +346,21 @@ class BaseMiner(ABC, PushMixin):
         return population, hof, best_individual_all_time, generation
 
 
-    @abstractmethod
-    def load_data(self):
-        pass
+    # @abstractmethod
+    # def load_data(self):
+    #     pass
 
-    @abstractmethod
-    def create_model(self, genome):
-        pass
+    # @abstractmethod
+    # def create_model(self, genome):
+    #     pass
 
-    @abstractmethod
-    def train(self, model, train_loader):
-        pass
+    # @abstractmethod
+    # def train(self, model, train_loader):
+    #     pass
 
-    @abstractmethod
-    def evaluate(self, model, val_loader):
-        pass
+    # @abstractmethod
+    # def evaluate(self, model, val_loader):
+    #     pass
 
     
     def create_n_evaluate(self, individual, train_loader, val_loader):
@@ -367,29 +383,28 @@ class BaseMiner(ABC, PushMixin):
         logging.info(f"Logged mutated child for generation {generation} to {log_filename}")
 
     def mine(self):
+        """Main mining loop with multi-dataset support"""
         self.measure_baseline()
-        train_loader, val_loader = self.load_data()
         
         checkpoint_file = os.path.join(self.config.Miner.checkpoint_save_dir, 'evolution_checkpoint.pkl')
         
-        # Check if checkpoint exists
+        # Initialize or load checkpoint
         if os.path.exists(checkpoint_file):
-            # Load checkpoint
             logging.info("Loading checkpoint...")
             population, hof, best_individual_all_time, start_generation = self.load_checkpoint(checkpoint_file)
             logging.info(f"Resuming from generation {start_generation}")
         else:
-            # No checkpoint, start fresh
             population = self.toolbox.population(n=self.config.Miner.population_size)
             hof = tools.HallOfFame(1)
             best_individual_all_time = None
             start_generation = 0
             logging.info("Starting evolution from scratch")
-        
+
         stats = tools.Statistics(lambda ind: ind.fitness.values)
         stats.register("avg", torch.mean)
-        stats.register("min", torch.min)  # Replaced np with torch
-        
+        stats.register("min", torch.min)
+
+        # Main evolution loop
         for generation in tqdm(range(start_generation, self.config.Miner.generations)):
             # Evaluate the entire population
             for i, ind in enumerate(population):
@@ -1050,6 +1065,19 @@ class MinerFactory:
         miner_type = config.Miner.miner_type
         platform = config.Miner.push_platform
         core_count = config.Miner.num_processes
+
+        # Initialize dataset configs if not present
+        if not hasattr(config.Miner, 'datasets'):
+            config.Miner.datasets = {
+                'mnist': DatasetConfig(
+                    enabled=True,
+                    weight=1.0,
+                    batch_size=64,
+                    training_iterations=100,
+                    validation_iterations=10
+                )
+            }
+        
         if platform == 'pool':
             if miner_type == "activation":
                 if core_count == 1:
