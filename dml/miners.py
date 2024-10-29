@@ -4,6 +4,7 @@ from huggingface_hub import HfApi, Repository
 import os
 import requests
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
@@ -18,13 +19,19 @@ import torch.multiprocessing as torch_mp
 import multiprocessing as mp
 import time 
 
+from typing import Any, Dict
+
 from multiprocessing import Queue, Process, Pool, Value
 import queue
 
 from deap import algorithms, base, creator, tools, gp
 from functools import partial
 
-from dml.models import BaselineNN, EvolvableNN
+from datasets import load_dataset
+from PIL import Image
+
+
+from dml.models import BaselineNN, EvolvableNN, ModelFactory
 from dml.ops import create_pset
 from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
 from dml.gp_fix import SafePrimitiveTree
@@ -34,6 +41,127 @@ from dml.utils import set_seed, calculate_tree_depth
 
 LOCAL_STORAGE_PATH = "./checkpoints"
 os.makedirs(LOCAL_STORAGE_PATH, exist_ok=True)
+
+class DatasetMinerMixin:
+    """Mixin class that provides multi-dataset functionality for miners"""
+    def initialize_datasets(self) -> Dict[str, Dict[str, Any]]:
+        datasets = {}
+        
+        # MNIST
+        datasets['mnist'] = {
+            'loader': self.load_mnist_data,
+            'model_creator': lambda: ModelFactory.create_model('mnist', self.evolved_function).to(self.device),
+            'input_size': 28 * 28,
+            'output_size': 10,
+            'weight': self.dataset_weights.get('mnist', 0.2)
+        }
+        
+        # CIFAR-10
+        datasets['cifar10'] = {
+            'loader': self.load_cifar10_data,
+            'model_creator': lambda: ModelFactory.create_model('cifar10', self.evolved_function).to(self.device),
+            'input_size': 32 * 32 * 3,
+            'output_size': 10,
+            'weight': self.dataset_weights.get('cifar10', 0.3)
+        }
+        
+        # Shakespeare
+        datasets['shakespeare'] = {
+            'loader': self.load_shakespeare_data,
+            'model_creator': lambda: ModelFactory.create_model(
+                'shakespeare', 
+                self.evolved_function,
+                vocab_size=50257, 
+                embed_size=256
+            ).to(self.device),
+            'input_size': 256,
+            'output_size': 50257,
+            'weight': self.dataset_weights.get('shakespeare', 0.3)
+        }
+        
+        # ImageNet-1k subset
+        datasets['imagenet_subset'] = {
+            'loader': self.load_imagenet_subset_data,
+            'model_creator': lambda: ModelFactory.create_model('imagenet', self.evolved_function).to(self.device),
+            'input_size': 224 * 224 * 3,
+            'output_size': 1000,
+            'weight': self.dataset_weights.get('imagenet_subset', 0.2)
+        }
+        
+        return datasets
+    
+    def load_mnist_data(self):
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.1307,), (0.3081,))
+        ])
+        train_data = datasets.MNIST('../data', train=True, download=True, transform=transform)
+        val_data = datasets.MNIST('../data', train=False, transform=transform)
+        return self._create_dataloaders(train_data, val_data)
+
+    def load_cifar10_data(self):
+        transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        ])
+        train_data = datasets.CIFAR10('../data', train=True, download=True, transform=transform)
+        val_data = datasets.CIFAR10('../data', train=False, transform=transform)
+        return self._create_dataloaders(train_data, val_data)
+
+    def load_shakespeare_data(self):
+        dataset = load_dataset("tiny_shakespeare")
+        
+        def tokenize_function(examples):
+            return self.tokenizer(examples['text'], truncation=True, max_length=128)
+        
+        tokenized_dataset = dataset.map(tokenize_function, batched=True)
+        train_data = tokenized_dataset['train']
+        val_data = tokenized_dataset['validation']
+        
+        return self._create_dataloaders(train_data, val_data, batch_size=16)
+
+    def load_imagenet_subset_data(self):
+        transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                               std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Using a smaller subset of ImageNet for validation
+        dataset = load_dataset("imagenet-1k", split="validation[:1000]")
+        
+        def preprocess_image(example):
+            image = Image.open(example['image'].convert('RGB'))
+            return {'image': transform(image), 'label': example['label']}
+        
+        processed_dataset = dataset.map(preprocess_image)
+        train_size = int(0.8 * len(processed_dataset))
+        train_data = processed_dataset.select(range(train_size))
+        val_data = processed_dataset.select(range(train_size, len(processed_dataset)))
+        
+        return self._create_dataloaders(train_data, val_data)
+
+    def _create_dataloaders(self, train_data, val_data, batch_size=None):
+        if batch_size is None:
+            batch_size = self.config.Validator.batch_size
+        
+        train_loader = DataLoader(
+            train_data, 
+            batch_size=batch_size, 
+            shuffle=True, 
+            generator=torch.Generator().manual_seed(self.seed)
+        )
+        val_loader = DataLoader(
+            val_data, 
+            batch_size=batch_size, 
+            shuffle=False, 
+            generator=torch.Generator().manual_seed(self.seed)
+        )
+        return train_loader, val_loader
+
+
 
 class BaseMiner(ABC, PushMixin):
     def __init__(self, config):
@@ -661,59 +789,76 @@ class IslandMiner(BaseMiner):
         logging.info("Shutdown signal sent to all islands")
 
 
-class ActivationMiner(BaseMiner):
+class ActivationMiner(BaseMiner, DatasetMinerMixin):
 
-    def load_data(self):
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        train_data = datasets.MNIST('../data', train=True, download=True, transform=transform)
-        val_data = datasets.MNIST('../data', train=False, transform=transform)
-        train_loader = DataLoader(train_data, batch_size=64, shuffle=True, generator=torch.Generator().manual_seed(self.seed))
-        val_loader = DataLoader(val_data, batch_size=128, shuffle=False, generator=torch.Generator().manual_seed(self.seed))
-        return train_loader, val_loader
 
-    def create_model(self, individual):
-        set_seed(self.seed)
-        return EvolvableNN(
-            input_size=28*28, 
-            hidden_size=128, 
-            output_size=10, 
-            evolved_activation=self.toolbox.compile(expr=individual)
-        ).to(self.device)
-
-    def train(self, model, train_loader):
-        set_seed(self.seed)
+    def train_model(self, model, train_loader):
+        """Training logic for a single model"""
         optimizer = torch.optim.Adam(model.parameters())
         criterion = torch.nn.CrossEntropyLoss()
         model.train()
+        
         for idx, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
             if idx == self.config.Miner.training_iterations:
                 break
+                
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
+            
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, targets)
             loss.backward()
             optimizer.step()
 
-    def evaluate(self, model, val_loader):
-        set_seed(self.seed)
+
+    def evaluate_model(self, model, val_loader):
+        """Evaluation logic for a single model"""
         model.eval()
         correct = 0
         total = 0
+        
         with torch.no_grad():
-            for idx, (inputs, targets) in enumerate(val_loader):
+            for inputs, targets in val_loader:
                 inputs = inputs.to(self.device)
                 targets = targets.to(self.device)
-                if idx >= self.config.Miner.evaluation_iterations:
-                    return correct/total
                 outputs = model(inputs)
                 _, predicted = outputs.max(1)
                 total += targets.size(0)
                 correct += predicted.eq(targets).sum().item()
-        return correct / total
+        
+        return correct / total if total > 0 else 0.0
+
     
-class LossMiner(BaseMiner):
+    def create_n_evaluate(self, individual, train_loader, val_loader):
+        """
+        Creates and evaluates models with the evolved activation across all datasets
+        """
+        self.evolved_function = self.toolbox.compile(expr=individual)
+        total_fitness = 0.0
+        
+        for dataset_name, dataset_info in self.datasets.items():
+            try:
+                # Get dataset-specific loaders
+                train_loader, val_loader = dataset_info['loader']()
+                
+                # Create model for this dataset
+                model = dataset_info['model_creator']()
+                
+                # Train and evaluate
+                self.train_model(model, train_loader)
+                fitness = self.evaluate_model(model, val_loader)
+                weighted_fitness = fitness * dataset_info['weight']
+                total_fitness += weighted_fitness
+                
+                logging.debug(f"{dataset_name} Fitness: {fitness:.4f} (Weighted: {weighted_fitness:.4f})")
+            except Exception as e:
+                logging.error(f"Error evaluating {dataset_name}: {str(e)}")
+                continue
+        
+        return (total_fitness,)
+    
+class LossMiner(BaseMiner, DatasetMinerMixin):
     def __init__(self, config):
         super().__init__(config)
         #self.seed_population()
@@ -724,33 +869,87 @@ class LossMiner(BaseMiner):
     #                                     ind.input_addresses, ind.output_addresses) for ind in population]
     #     return mse_population
 
-    def load_data(self):
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        train_data = datasets.MNIST('../data', train=True, download=True, transform=transform)
-        val_data = datasets.MNIST('../data', train=False, transform=transform)
-        train_loader = DataLoader(train_data, batch_size=128, shuffle=True, generator=torch.Generator().manual_seed(self.seed))
-        val_loader = DataLoader(val_data, batch_size=128, shuffle=False, generator=torch.Generator().manual_seed(self.seed))
-        return train_loader, val_loader
+    
+    def create_n_evaluate(self, individual, train_loader, val_loader):
+        """
+        Creates and evaluates models with the evolved loss across all datasets
+        """
+        self.evolved_function = self.toolbox.compile(expr=individual)
+        total_fitness = 0.0
+        
+        for dataset_name, dataset_info in self.datasets.items():
+            try:
+                # Get dataset-specific loaders
+                train_loader, val_loader = dataset_info['loader']()
+                
+                # Create model for this dataset
+                model = dataset_info['model_creator']()
+                
+                # Train with evolved loss
+                self.train_model(model, train_loader, self.evolved_function)
+                
+                # Evaluate
+                fitness = self.evaluate_model(model, val_loader)
+                weighted_fitness = fitness * dataset_info['weight']
+                total_fitness += weighted_fitness
+                
+                logging.debug(f"{dataset_name} Fitness: {fitness:.4f} (Weighted: {weighted_fitness:.4f})")
+            except Exception as e:
+                logging.error(f"Error evaluating {dataset_name}: {str(e)}")
+                continue
+        
+        return (total_fitness,)
 
-    def create_model(self, individual):
-        set_seed(self.seed)
-        return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device), self.toolbox.compile(expr=individual)
+    def train_model(self, model, train_loader, loss_function):
+        """Training logic with evolved loss function"""
+        optimizer = torch.optim.Adam(model.parameters())
+        model.train()
+        
+        for idx, (inputs, targets) in enumerate(train_loader):
+            if idx == self.config.Miner.training_iterations:
+                break
+                
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
+            
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            
+            if hasattr(model, 'output_size') and model.output_size > 1:
+                targets = F.one_hot(targets, num_classes=model.output_size).float()
+            
+            loss = self.safe_evaluate(loss_function, outputs, targets)
+            if torch.isfinite(loss):
+                loss.backward()
+                optimizer.step()
+
+    def evaluate_model(self, model, val_loader):
+        """Evaluation logic for a single model"""
+        model.eval()
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for inputs, targets in val_loader:
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                outputs = model(inputs)
+                _, predicted = outputs.max(1)
+                total += targets.size(0)
+                correct += predicted.eq(targets).sum().item()
+        
+        return correct / total if total > 0 else 0.0
+
 
     @staticmethod
     def safe_evaluate(func, outputs, labels):
         try:
             loss = func(outputs, labels)
             
-            if loss is None:
-                logging.error(f"Loss function returned None: {func}")
-                return torch.tensor(float('inf'), device=outputs.device)
-            
-            if not torch.is_tensor(loss):
-                logging.error(f"Loss function didn't return a tensor: {type(loss)}")
+            if loss is None or not torch.is_tensor(loss):
                 return torch.tensor(float('inf'), device=outputs.device)
             
             if not torch.isfinite(loss).all():
-                logging.warning(f"Non-finite loss detected: {loss}")
                 return torch.tensor(float('inf'), device=outputs.device)
             
             if loss.ndim > 0:
@@ -759,46 +958,8 @@ class LossMiner(BaseMiner):
             return loss
         except Exception as e:
             logging.error(f"Error in loss calculation: {str(e)}")
-            #logging.error(traceback.format_exc())
             return torch.tensor(float('inf'), device=outputs.device)
 
-    def train(self, model_and_loss, train_loader):
-        set_seed(self.seed)
-        model, loss_function = model_and_loss
-        optimizer = torch.optim.Adam(model.parameters())
-        model.train()
-        for idx, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
-            if idx == 2:
-                break
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=10).float()
-            loss = self.safe_evaluate(loss_function, outputs, targets_one_hot)
-            loss.backward()
-            optimizer.step()
-
-    def evaluate(self, model_and_loss, val_loader):
-        set_seed(self.seed)
-        model, _ = model_and_loss
-        model.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for idx, (inputs, targets) in enumerate(val_loader):
-                inputs = inputs.to(self.device)
-                targets = targets.to(self.device)
-                if idx > 10:
-                    break
-                outputs = model(inputs)
-                _, predicted = outputs.max(1)
-                total += targets.size(0)
-                correct += predicted.eq(targets).sum().item()
-        return correct / total
-
-    def create_baseline_model(self):
-        return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device), torch.nn.MSELoss()
 
 
 class SimpleMiner(BaseMiner):
