@@ -23,10 +23,8 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-from dml.destinations import (HuggingFacePushDestination, PoolPushDestination,
-                              PushMixin)
-from dml.gene_io import (load_individual_from_json, safe_eval,
-                         save_individual_to_json)
+from dml.destinations import HuggingFacePushDestination, PoolPushDestination, PushMixin
+from dml.gene_io import load_individual_from_json, safe_eval, save_individual_to_json
 from dml.gp_fix import SafePrimitiveTree
 from dml.models import BaselineNN, EvolvableNN
 from dml.ops import create_pset

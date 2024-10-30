@@ -5,8 +5,7 @@ import subprocess
 import torch
 from bittensor import logging
 from dotenv import load_dotenv
-from huggingface_hub import (HfApi, HfFolder, Repository, hf_hub_download,
-                             scan_cache_dir)
+from huggingface_hub import HfApi, HfFolder, Repository, hf_hub_download, scan_cache_dir
 
 load_dotenv()
 

@@ -218,8 +218,6 @@ def main():
         logging.error(f"An error occurred: {e}")
         return 1
 
-    return 0
-
 
 if __name__ == "__main__":
     exit(main())

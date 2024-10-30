@@ -5,8 +5,16 @@ import unittest
 from deap import gp
 from expression_transformer import transform_expression
 
-from dml.ops import (safe_add, safe_div, safe_mul, safe_relu, safe_sigmoid,
-                     safe_sub, safe_tanh)
+from dml.ops import (
+    safe_add,
+    safe_div,
+    safe_mul,
+    safe_relu,
+    safe_sigmoid,
+    safe_sub,
+    safe_tanh,
+)
+
 # Assuming these are defined elsewhere
 from dml.serialize import ALLOWED_PRIMITIVES, serialize_primitive_tree
 

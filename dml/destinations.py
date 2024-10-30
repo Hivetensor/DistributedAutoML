@@ -27,6 +27,9 @@ class PushDestination(ABC):
 
 
 class PushMixin:
+    def __init__(self):
+        self.push_destinations = []
+
     def push_to_remote(self, gene: Dict[str, Any], commit_message: str) -> None:
         if not hasattr(self, "push_destinations"):
             logging.warning("No push destinations defined")
@@ -50,6 +53,14 @@ class StorageBase(PushDestination):
             "storage_type": self.__class__.__name__,
         }
 
+    def _extract_fitness(self, commit_message: str) -> Optional[float]:
+        try:
+            if "fitness=" in commit_message:
+                return float(commit_message.split("fitness=")[-1].split()[0])
+            return None
+        except (ValueError, IndexError):
+            return None
+
     def _prepare_content(
         self, gene: Dict[str, Any], commit_message: str
     ) -> Dict[str, Any]:
@@ -58,14 +69,6 @@ class StorageBase(PushDestination):
             "metadata": self._prepare_metadata(commit_message),
             "fitness": self._extract_fitness(commit_message),
         }
-
-    def _extract_fitness(self, commit_message: str) -> Optional[float]:
-        try:
-            if "fitness=" in commit_message:
-                return float(commit_message.split("fitness=")[-1].split()[0])
-            return None
-        except (ValueError, IndexError):
-            return None
 
 
 class HuggingFacePushDestination(StorageBase):
@@ -190,4 +193,5 @@ class GitHubPushDestination(StorageBase):
 
 class MultiDestinationPush(PushMixin):
     def __init__(self, destinations: List[PushDestination]):
+        super().__init__()
         self.push_destinations = destinations
