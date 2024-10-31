@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 import requests
 from huggingface_hub import HfApi
 
+from dml.configs.config import config
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
@@ -53,22 +55,38 @@ class StorageBase(PushDestination):
             "storage_type": self.__class__.__name__,
         }
 
-    def _extract_fitness(self, commit_message: str) -> Optional[float]:
-        try:
-            if "fitness=" in commit_message:
-                return float(commit_message.split("fitness=")[-1].split()[0])
-            return None
-        except (ValueError, IndexError):
-            return None
+    # TODO: not specified as of this bounty but potentially useful in future
+    # def _extract_fitness(self, commit_message: str) -> Optional[float]:
+    #     try:
+    #         if "fitness=" in commit_message:
+    #             return float(commit_message.split("fitness=")[-1].split()[0])
+    #         return None
+    #     except (ValueError, IndexError):
+    #         return None
 
     def _prepare_content(
-        self, gene: Dict[str, Any], commit_message: str
+            self, gene: Dict[str, Any], commit_message: str
     ) -> Dict[str, Any]:
         return {
             "gene": gene,
             "metadata": self._prepare_metadata(commit_message),
-            "fitness": self._extract_fitness(commit_message),
+            # "fitness": self._extract_fitness(commit_message),
         }
+
+
+class PoolPushDestination(StorageBase):
+    def __init__(self, pool_url: str, wallet: str):
+        self.pool_url = pool_url
+        self.wallet = wallet
+
+    def push(self, gene: Dict[str, Any], commit_message: str):
+        data = self._prepare_content(gene, commit_message)
+        response = requests.post(f"{self.pool_url}/push_gene", json=data)
+
+        if response.status_code == 200:
+            logging.info(f"Successfully pushed gene to pool: {commit_message}")
+        else:
+            logging.error(f"Failed to push gene to pool: {response.text}")
 
 
 class HuggingFacePushDestination(StorageBase):
@@ -76,18 +94,24 @@ class HuggingFacePushDestination(StorageBase):
         self.repo_name = repo_name
         self.api = HfApi(token=token)
 
-    def push(self, gene: Dict[str, Any], commit_message: str) -> bool:
+    def push(self, gene: Dict[str, Any], commit_message: str, save_temp: bool = config.Miner.save_temp_only) -> bool:
         if not self.repo_name:
             logging.info("No HuggingFace repository provided")
             return False
 
         content = self._prepare_content(gene, commit_message)
 
-        with tempfile.NamedTemporaryFile(
-            mode="w", delete=False, suffix=".json"
-        ) as temp_file:
-            json.dump(content, temp_file)
-            temp_path = temp_file.name
+        if save_temp:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", delete=False, suffix=".json"
+            ) as temp_file:
+                json.dump(content, temp_file)
+                temp_path = temp_file.name
+        else:
+            os.makedirs(config.Miner.checkpoint_save_dir, exist_ok=True)
+            temp_path = os.path.join(config.Miner.checkpoint_save_dir, "best_gene.json")
+            with open(temp_path, "w") as temp_file:
+                json.dump(content, temp_file)
 
         try:
             self.api.upload_file(
