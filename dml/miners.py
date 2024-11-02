@@ -13,10 +13,14 @@ import numpy as np
 import random 
 import math 
 import pickle
+import operator 
+
+from typing import Any, List, Tuple
 
 from deap import algorithms, base, creator, tools, gp
 
-from dml.models import BaselineNN, EvolvableNN
+from dml.data import DatasetSpec, get_imagenet_1k_loaders, get_shakespeare_loaders, get_mnist_loaders, get_cifar10_loaders
+from dml.models import BaselineNN, EvolvableNN, get_model_for_dataset
 from dml.ops import create_pset
 from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
 from dml.gp_fix import SafePrimitiveTree
@@ -31,6 +35,7 @@ class BaseMiner(ABC, PushMixin):
         self.config = config
         self.device = self.config.device
         self.seed = self.config.Miner.seed
+        self.datasets: List[DatasetSpec] = []
 
         set_seed(self.seed)
     
@@ -62,8 +67,10 @@ class BaseMiner(ABC, PushMixin):
         self.toolbox.register("evaluate", self.create_n_evaluate)
         self.toolbox.register("select", tools.selTournament, tournsize=3)
         self.toolbox.register("mate", gp.cxOnePoint)
+        self.toolbox.decorate("mate", gp.staticLimit(operator.attrgetter('height'), self.config.Miner.gp_tree_height))
         self.toolbox.register("expr_mut", gp.genFull, min_=0, max_=2)
         self.toolbox.register("mutate", gp.mutUniform, expr=self.toolbox.expr_mut, pset=self.pset)
+        self.toolbox.decorate("mutate", gp.staticLimit(operator.attrgetter('height'), self.config.Miner.gp_tree_height))
 
     def log_metrics(self, metrics):
         self.metrics_data.append(metrics)
@@ -73,48 +80,17 @@ class BaseMiner(ABC, PushMixin):
             df = pd.DataFrame(self.metrics_data)
             df.to_csv(self.metrics_file, index=False)
 
-    
-
-    def emigrate_genes(self, best_gene):
-        
-        # Submit best gene
-        gene_data = []
-        for gene in best_gene:
-            gene_data.append(save_individual_to_json(gene=gene))
-
-        response = requests.post(f"{self.migration_server_url}/submit_gene", json=gene_data)
-
-        if response.status_code == 200:
-            return True
-        else:
-            return False
-        
-    def immigrate_genes(self):
-        # Get mixed genes from server
-        response = requests.get(f"{self.migration_server_url}/get_mixed_genes")
-        received_genes_data = response.json()
-
-        if not self.migration_server_url:
-            return []
-        
-        return [load_individual_from_json(gene_data=gene_data, function_decoder=self.function_decoder) 
-                for gene_data in received_genes_data]
-
-    #One migration cycle
-    def migrate_genes(self,best_gene):
-        self.emigrate_genes(best_gene)
-        return self.immigrate_genes()
-    
+     
     def create_baseline_model(self):
         return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device)
 
-    def measure_baseline(self):
-        set_seed(self.seed)
-        train_loader, val_loader = self.load_data()
-        baseline_model = self.create_baseline_model()
-        self.train(baseline_model, train_loader)
-        self.baseline_accuracy = self.evaluate(baseline_model, val_loader)
-        logging.info(f"Baseline model accuracy: {self.baseline_accuracy:.4f}")
+    # def measure_baseline(self):
+    #     set_seed(self.seed)
+    #     train_loader, val_loader = self.load_data()
+    #     baseline_model = self.create_baseline_model()
+    #     self.train(baseline_model, train_loader)
+    #     self.baseline_accuracy = self.evaluate(baseline_model, val_loader)
+    #     logging.info(f"Baseline model accuracy: {self.baseline_accuracy:.4f}")
     
 
     def save_checkpoint(self, population, hof, best_individual_all_time, generation, random_state, torch_rng_state, numpy_rng_state, checkpoint_file):
@@ -185,9 +161,9 @@ class BaseMiner(ABC, PushMixin):
         return population, hof, best_individual_all_time, generation
 
 
-    @abstractmethod
-    def load_data(self):
-        pass
+    # @abstractmethod
+    # def load_data(self):
+    #     pass
 
     @abstractmethod
     def create_model(self, genome):
@@ -202,17 +178,28 @@ class BaseMiner(ABC, PushMixin):
         pass
 
     
-    def create_n_evaluate(self, individual, train_loader, val_loader):
+    def create_n_evaluate(self, individual, datasets: List[DatasetSpec]) -> Tuple[float]:
+        total_weighted_fitness = 0.0
+        total_weight = sum(dataset.weight for dataset in datasets)
 
-        model = self.create_model(individual)
-        try:
-            self.train(model, train_loader=train_loader)
-            fitness = self.evaluate(model, val_loader=val_loader)
-        except:
-            return 0.0,
+        for dataset in datasets:
+            model = self.create_model(individual, dataset)
+            try:
+                self.train(
+                    model=model,
+                    train_loader=dataset.train_loader,
+                    learning_rate=dataset.learning_rate,
+                    training_iterations=dataset.training_iterations
+                )
+                fitness = self.evaluate(model, dataset.val_loader)
+                logging.info(f"Fitness: {fitness} for dataset: {dataset.name}")
+                total_weighted_fitness += (fitness * dataset.weight)
+            except Exception as e:
+                logging.error(f"Error training on {dataset.name}: {str(e)}")
+                return 0.0,
 
-
-        return fitness,
+        avg_fitness = total_weighted_fitness / total_weight
+        return avg_fitness,
 
     def log_mutated_child(self, offspring, generation):
         unpacked_code = self.unpacker.unpack_function_genome(offspring)
@@ -222,8 +209,7 @@ class BaseMiner(ABC, PushMixin):
         logging.info(f"Logged mutated child for generation {generation} to {log_filename}")
 
     def mine(self):
-        self.measure_baseline()
-        train_loader, val_loader = self.load_data()
+        #self.measure_baseline()
         
         checkpoint_file = os.path.join(LOCAL_STORAGE_PATH, 'evolution_checkpoint.pkl')
         
@@ -248,8 +234,10 @@ class BaseMiner(ABC, PushMixin):
         for generation in tqdm(range(start_generation, self.config.Miner.generations)):
             # Evaluate the entire population
             for i, ind in enumerate(population):
+                
                 if not ind.fitness.valid:
-                    ind.fitness.values = self.toolbox.evaluate(ind, train_loader, val_loader)
+                    #logging.info(f"loss under evaluation: {str(ind)}")
+                    ind.fitness.values = self.toolbox.evaluate(ind, self.datasets)
                 logging.debug(f"Gen {generation}, Individual {i}: Fitness = {ind.fitness.values[0]}")
         
             # Select the next generation individuals
@@ -258,21 +246,37 @@ class BaseMiner(ABC, PushMixin):
             offspring = list(map(self.toolbox.clone, offspring))
         
             # Apply crossover and mutation on the offspring
-            for child1, child2 in zip(offspring[::2], offspring[1::2]):
+            for i in range(0, len(offspring), 2):
                 if random.random() < 0.5:
-                    self.toolbox.mate(child1, child2)
-                    del child1.fitness.values
-                    del child2.fitness.values
-        
-            for mutant in offspring:
+                    if i + 1 < len(offspring):
+                        child1, child2 = offspring[i], offspring[i+1]
+                        safe_temp1, safe_temp2 = self.toolbox.clone(child1), self.toolbox.clone(child2)
+                        self.toolbox.mate(child1, child2)
+                        
+                        if child1.height > self.config.Miner.gp_tree_height:
+                            offspring[i] = safe_temp1
+                        
+                        if child2.height > self.config.Miner.gp_tree_height:
+                            offspring[i+1] = safe_temp2
+                        
+                        del offspring[i].fitness.values
+                        del offspring[i+1].fitness.values
+
+            for i in range(len(offspring)):
                 if random.random() < 0.2:
+                    mutant = self.toolbox.clone(offspring[i])
                     self.toolbox.mutate(mutant)
-                    del mutant.fitness.values
+                    if mutant.height <= self.config.Miner.gp_tree_height:
+                        offspring[i] = mutant
+                        del offspring[i].fitness.values
+
             population[:] = offspring
         
             invalid_ind = [ind for ind in population if not ind.fitness.valid]
             for i, ind in enumerate(invalid_ind):
-                ind.fitness.values = self.toolbox.evaluate(ind, train_loader, val_loader)
+                ##Add multiple datasets to toolbox.evaluate
+                #logging.info(f"loss under evaluation: {str(ind)}")
+                ind.fitness.values = self.toolbox.evaluate(ind, self.datasets)
                 logging.debug(f"Gen {generation}, New Individual {i}: Fitness = {ind.fitness.values[0]}")
         
             # Update the hall of fame with the generated individuals
@@ -406,15 +410,15 @@ class ActivationMiner(BaseMiner):
             evolved_activation=self.toolbox.compile(expr=individual)
         ).to(self.device)
 
-    def train(self, model, train_loader):
+    def train(self, model, train_loader, learning_rate, training_iterations, **kwargs):
         set_seed(self.seed)
-        optimizer = torch.optim.Adam(model.parameters())
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         criterion = torch.nn.CrossEntropyLoss()
         model.train()
         for idx, (inputs, targets) in enumerate(train_loader):
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
-            if idx == 1:
+            if idx == training_iterations:
                 break
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -442,6 +446,7 @@ class ActivationMiner(BaseMiner):
 class LossMiner(BaseMiner):
     def __init__(self, config):
         super().__init__(config)
+        self.datasets = self.load_datasets()
         #self.seed_population()
 
     # def seed_population(self, mse = True):
@@ -450,21 +455,76 @@ class LossMiner(BaseMiner):
     #                                     ind.input_addresses, ind.output_addresses) for ind in population]
     #     return mse_population
 
-    def load_data(self):
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        train_data = datasets.MNIST('../data', train=True, download=True, transform=transform)
-        val_data = datasets.MNIST('../data', train=False, transform=transform)
-        train_loader = DataLoader(train_data, batch_size=128, shuffle=True, generator=torch.Generator().manual_seed(self.seed))
-        val_loader = DataLoader(val_data, batch_size=128, shuffle=False, generator=torch.Generator().manual_seed(self.seed))
-        return train_loader, val_loader
+    def load_datasets(self) -> List[DatasetSpec]:
+        mnist_train, mnist_val = get_mnist_loaders(
+            batch_size=self.config.Miner.batch_size
+        )
+        cifar_train, cifar_val = get_cifar10_loaders(
+            batch_size=self.config.Miner.batch_size
+        )
 
-    def create_model(self, individual):
-        set_seed(self.seed)
-        return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device), self.toolbox.compile(expr=individual)
+        # imagenet_train, imagenet_val = get_imagenet_1k_loaders(
+        # data_dir=self.config.imagenet_path,
+        # batch_size=self.config.Miner.batch_size
+        # )
+    
+        # Add Shakespeare
+        shakespeare_train, shakespeare_val, vocab_size = get_shakespeare_loaders(
+            #text_path=self.config.shakespeare_path,
+            batch_size=self.config.Miner.batch_size
+        )
+        
+        return [
+            DatasetSpec(
+                name="mnist",
+                input_size=28*28,
+                output_size=10,
+                train_loader=mnist_train,
+                val_loader=mnist_val
+            ),
+            DatasetSpec(
+                name="cifar10",
+                input_size=32*32*3,
+                output_size=10,
+                train_loader=cifar_train,
+                val_loader=cifar_val
+            ),
+            # DatasetSpec(
+            # name="imagenet",
+            # input_size=(3, 224, 224),
+            # output_size=1000,
+            # train_loader=imagenet_train,
+            # val_loader=imagenet_val,
+            # learning_rate=0.1,  # Different LR for ImageNet
+            # weight=2.0  # Give more weight to ImageNet
+            # ),
+            DatasetSpec(
+                name="shakespeare",
+                input_size=32,  # sequence length
+                output_size=vocab_size,
+                train_loader=shakespeare_train,
+                val_loader=shakespeare_val,
+                hidden_size=32,  # Transformer embed size
+                learning_rate=3e-4  # Standard LR for transformers
+            )
+        ]
+
+    # def create_model(self, individual):
+    #     set_seed(self.seed)
+    #     return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device), self.toolbox.compile(expr=individual)
+    
+    def create_model(self, genome: Any, dataset_spec: DatasetSpec) -> torch.nn.Module:
+        """Create model based on genome and dataset specifications"""
+        base_model = get_model_for_dataset(
+            dataset_name=dataset_spec.name,
+            hidden_size=dataset_spec.hidden_size
+        ).to(self.device)
+        return base_model, self.toolbox.compile(expr=genome)
 
     @staticmethod
     def safe_evaluate(func, outputs, labels):
         try:
+
             loss = func(outputs, labels)
             
             if loss is None:
@@ -488,26 +548,27 @@ class LossMiner(BaseMiner):
             #logging.error(traceback.format_exc())
             return torch.tensor(float('inf'), device=outputs.device)
 
-    def train(self, model_and_loss, train_loader):
+    def train(self, model, train_loader, learning_rate, training_iterations,**kwargs):
         set_seed(self.seed)
-        model, loss_function = model_and_loss
-        optimizer = torch.optim.Adam(model.parameters())
+        model, loss_function = model
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         model.train()
         for idx, (inputs, targets) in enumerate(train_loader):
             inputs = inputs.to(self.device)
             targets = targets.to(self.device)
-            if idx == 2:
+            if idx == training_iterations:
                 break
             optimizer.zero_grad()
             outputs = model(inputs)
-            targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=10).float()
+            targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=outputs.shape[-1]).float()
             loss = self.safe_evaluate(loss_function, outputs, targets_one_hot)
+
             loss.backward()
             optimizer.step()
 
-    def evaluate(self, model_and_loss, val_loader):
+    def evaluate(self, model, val_loader):
         set_seed(self.seed)
-        model, _ = model_and_loss
+        model, _ = model
         model.eval()
         correct = 0
         total = 0
@@ -518,10 +579,16 @@ class LossMiner(BaseMiner):
                 if idx > 10:
                     break
                 outputs = model(inputs)
-                _, predicted = outputs.max(1)
-                total += targets.size(0)
-                correct += predicted.eq(targets).sum().item()
+                _, predicted = outputs.max(-1)
+                if len(outputs.shape) > 2:
+                    #Make it top5
+                    total += (outputs.size(0) * outputs.size(1))
+                    correct += predicted.eq(targets).sum().item()
+                else:
+                    total += targets.size(0)
+                    correct += predicted.eq(targets).sum().item()
         return correct / total
+        
 
     def create_baseline_model(self):
         return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device), torch.nn.MSELoss()
