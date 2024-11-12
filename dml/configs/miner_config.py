@@ -12,10 +12,11 @@ class MinerConfig:
     miner_type = "loss"
     num_processes = 1
     pool_url = None #"http://127.0.0.1:5000"
-    population_size = 200 # Per process pop = population_size // num_processes
+    population_size = 10 # Per process pop = population_size // num_processes
     push_platform = "hf"
     save_temp_only = True
     seed = int(time.time())
     tournament_size = 2    
-    training_iterations = 10
+    training_iterations = 100
+    dataset_names = ["cifar10", "shakespeare"]
     

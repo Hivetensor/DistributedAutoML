@@ -21,8 +21,9 @@ import queue
 from deap import algorithms, base, creator, tools, gp
 from functools import partial
 
-from dml.models import BaselineNN, EvolvableNN
+from dml.data import load_datasets
 from dml.deap_individual import FitnessMax, Individual
+from dml.models import BaselineNN, EvolvableNN, get_model_for_dataset
 from dml.ops import create_pset
 from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
 from dml.gp_fix import SafePrimitiveTree
@@ -138,7 +139,7 @@ class BaseMiner(ABC, PushMixin):
         generation = checkpoint['generation']
         
         return population, hof, best_individual_all_time, generation
-
+    
         # Reconstruct best_individual_all_time
         best_individual_str, best_individual_fitness = checkpoint['best_individual_all_time']
         if best_individual_str is not None:
@@ -181,15 +182,16 @@ class BaseMiner(ABC, PushMixin):
         pass
 
     
-    def create_n_evaluate(self, individual, train_loader, val_loader):
-
-        model = self.create_model(individual)
-        try:
-            self.train(model, train_loader=train_loader)
-            fitness = self.evaluate(model, val_loader=val_loader)
-        except:
-            return 0.0,
-
+    def create_n_evaluate(self, individual, datasets):
+        fitness = 0.0
+        for dataset in datasets:
+            model = self.create_model(individual, dataset.name)            
+            try:
+                self.train(model, train_loader=dataset.train_loader)
+                fitness += self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
+            except Exception as e:
+                logging.error(e)
+                return 0.0,
 
         return fitness,
 
@@ -202,7 +204,7 @@ class BaseMiner(ABC, PushMixin):
 
     def mine(self):
         self.measure_baseline()
-        train_loader, val_loader = self.load_data()
+        datasets = load_datasets(self.config.Miner.dataset_names)
         
         checkpoint_file = os.path.join(LOCAL_STORAGE_PATH, 'evolution_checkpoint.pkl')
         
@@ -228,7 +230,7 @@ class BaseMiner(ABC, PushMixin):
             # Evaluate the entire population
             for i, ind in enumerate(population):
                 if not ind.fitness.valid:
-                    ind.fitness.values = self.toolbox.evaluate(ind, train_loader, val_loader)
+                    ind.fitness.values = self.toolbox.evaluate(ind, datasets)
                 logging.debug(f"Gen {generation}, Individual {i}: Fitness = {ind.fitness.values[0]}")
 
             height = []
@@ -273,17 +275,17 @@ class BaseMiner(ABC, PushMixin):
                                     del offspring[i].fitness.values
 
             # Evaluate the new individuals
-            invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
-            fitnesses = map(self.toolbox.evaluate, invalid_ind, [train_loader]*len(invalid_ind), [val_loader]*len(invalid_ind))
-            for ind, fit in zip(invalid_ind, fitnesses):
-                ind.fitness.values = fit
+            # invalid_ind = [ind for ind in offspring if not ind.fitness.valid]
+            # fitnesses = map(self.toolbox.evaluate, invalid_ind, [train_loader]*len(invalid_ind), [val_loader]*len(invalid_ind))
+            # for ind, fit in zip(invalid_ind, fitnesses):
+            #     ind.fitness.values = fit
 
             # Update the population
             population[:] = offspring
         
             invalid_ind = [ind for ind in population if not ind.fitness.valid]
             for i, ind in enumerate(invalid_ind): 
-                ind.fitness.values = self.toolbox.evaluate(ind, train_loader, val_loader)
+                ind.fitness.values = self.toolbox.evaluate(ind, datasets)
                 logging.debug(f"Gen {generation}, New Individual {i}: Fitness = {ind.fitness.values[0]}")
         
             # Update the hall of fame with the generated individuals
@@ -459,7 +461,7 @@ class IslandMiner(BaseMiner):
             local_best_fitness = -float('inf')
             logging.info(f"Island {island_id} starting from scratch")
         
-        train_loader, val_loader = self.load_data()
+        datasets = load_datasets(self.config.Miner.dataset_names)
         
         while generation < self.config.Miner.generations:
             # Evolution step
@@ -473,7 +475,7 @@ class IslandMiner(BaseMiner):
             # Evaluate
             for ind in offspring:
                 if not ind.fitness.valid:
-                    ind.fitness.values = self.create_n_evaluate(ind, train_loader, val_loader)
+                    ind.fitness.values = self.create_n_evaluate(ind, datasets)
                     
                     # Check for special migration case
                     if ind.fitness.values[0] > local_best_fitness:
@@ -712,9 +714,9 @@ class LossMiner(BaseMiner):
         val_loader = DataLoader(val_data, batch_size=128, shuffle=False, generator=torch.Generator().manual_seed(self.seed))
         return train_loader, val_loader
 
-    def create_model(self, individual):
+    def create_model(self, individual, dataset_name):
         set_seed(self.seed)
-        return BaselineNN(input_size=28*28, hidden_size=128, output_size=10).to(self.device), self.toolbox.compile(expr=individual)
+        return get_model_for_dataset(dataset_name), self.toolbox.compile(expr=individual)
 
     @staticmethod
     def safe_evaluate(func, outputs, labels):
@@ -754,7 +756,7 @@ class LossMiner(BaseMiner):
                 break
             optimizer.zero_grad()
             outputs = model(inputs)
-            targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=10).float()
+            targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=outputs.shape[-1]).float()
             loss = self.safe_evaluate(loss_function, outputs, targets_one_hot)
             loss.backward()
             optimizer.step()
@@ -772,9 +774,14 @@ class LossMiner(BaseMiner):
                 if idx > 10:
                     break
                 outputs = model(inputs)
-                _, predicted = outputs.max(1)
-                total += targets.size(0)
-                correct += predicted.eq(targets).sum().item()
+                if len(outputs.shape) == 3:
+                    _, predicted = outputs.max(dim=-1)  
+                    total += targets.numel()  # Count all elements
+                    correct += predicted.eq(targets).sum().item()
+                else:
+                    _, predicted = outputs.max(1)
+                    total += targets.size(0)
+                    correct += predicted.eq(targets).sum().item()
         return correct / total
 
     def create_baseline_model(self):

@@ -7,3 +7,4 @@ torch>=2.5.1
 torchvision==0.20.1
 tqdm==4.66.5
 dill
+timeout-decorator==0.5.0

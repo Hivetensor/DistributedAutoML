@@ -19,7 +19,7 @@ def setup_logging(log_file='validator.log'):
 def main(config):
     # Initialize Bittensor Network
     setup_logging()
-    logging.info(f"Starting miner of type: {config.Validator.validator_type}")
+    logging.info(f"Starting validator of type: {config.Validator.validator_type}")
     bt_config = config.get_bittensor_config()
     BittensorNetwork.initialize(bt_config)
 
@@ -30,7 +30,7 @@ def main(config):
     
     # Create and start validator
     validator = ValidatorFactory.get_validator(config)
-    validator.measure_baseline()
+    #validator.measure_baseline()
     logging.info("Starting periodic validation")
     validator.start_periodic_validation()
 
