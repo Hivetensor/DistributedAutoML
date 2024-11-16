@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 
 from dml.configs.config import config
 from dml.gene_io import save_individual_to_json
+from dml.utils import get_validator_urls
 
 from huggingface_hub import HfApi
 
@@ -89,3 +90,41 @@ class PoolPushDestination(PushDestination):
             "message": message,
             "timestamp":timestamp
         }
+    
+class ValidatorPushDestination(PushDestination):
+    def __init__(self, wallet, metagraph):
+        self.metagraph = metagraph
+        self.wallet = wallet
+        self.last_validator_update = 999
+        self.validator_urls = None
+
+    def push(self, gene, commit_message):
+        self.check_n_update_valis()
+
+        data = self._prepare_request_data("push_gene")
+        data["gene"] = save_individual_to_json(gene)
+        data["commit_message"] = commit_message
+
+        for validator_url in self.validator_urls:
+            
+            try:
+                response = requests.post(f"{validator_url}/push_gene", json=data, timeout=5) 
+                if response.status_code == 200:
+                    logging.info(f"Successfully pushed gene to pool: {commit_message}")
+                else:
+                    logging.error(f"Failed to push gene to validator: {validator_url}")
+            except:
+                logging.error(f"Failed to push gene to validator: {validator_url}")
+
+    def _prepare_request_data(self, message, timestamp = time.time()):
+        return {
+            "public_address": self.wallet.hotkey.ss58_address,
+            "signature": self.wallet.hotkey.sign(message).hex(),
+            "message": message,
+            "timestamp":timestamp
+        }
+    
+    def check_n_update_valis(self):
+        update_delta = time.time() - self.last_validator_update
+        if (self.validator_urls is None) or (update_delta > config.Miner.validator_update_interval):
+            self.validator_urls = get_validator_urls(self.metagraph)

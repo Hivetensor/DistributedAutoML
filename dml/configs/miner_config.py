@@ -11,13 +11,14 @@ class MinerConfig:
     migration_interval = 100
     migrants_per_round = 10
     miner_type = "loss"
-    num_processes = 4
+    num_processes = 1
     pool_url = None #"http://127.0.0.1:5000"
     population_size = 50 # Per process pop = population_size // num_processes
-    push_platform = "hf"
+    push_platform = "server"
     save_temp_only = True
     seed = int(time.time())
     tournament_size = 2    
     training_iterations = 3
-    dataset_names = ["cifar10", "shakespeare"]
+    validator_update_interval = 60*60*4
+    dataset_names = ["mnist"]
     

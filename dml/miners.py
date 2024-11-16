@@ -27,7 +27,7 @@ from dml.models import BaselineNN, EvolvableNN, get_model_for_dataset
 from dml.ops import create_pset
 from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
 from dml.gp_fix import SafePrimitiveTree
-from dml.destinations import PushMixin, PoolPushDestination, HuggingFacePushDestination
+from dml.destinations import PushMixin, PoolPushDestination, HuggingFacePushDestination, ValidatorPushDestination
 from dml.utils import set_seed, calculate_tree_depth
 
 
@@ -260,8 +260,6 @@ class BaseMiner(ABC, PushMixin):
                         if child2.height > self.config.Miner.gp_tree_height:
                             offspring[i+1] = safe_temp2
                             
-
-                        
                         del offspring[i].fitness.values
                         if i + 1 < len(offspring):
                             del offspring[i+1].fitness.values
@@ -358,6 +356,13 @@ class BaseHuggingFaceMiner(BaseMiner):
     def __init__(self, config):
         super().__init__(config)
         self.push_destinations.append(HuggingFacePushDestination(config.gene_repo))
+
+
+class BaseValidatorServerMiner(BaseMiner):
+    def __init__(self, config):
+        super().__init__(config)
+        self.push_destinations.append(ValidatorPushDestination(config.bittensor_network.wallet, config.bittensor_network.metagraph))
+
 
 class BaseMiningPoolMiner(BaseMiner):
     def __init__(self, config):
@@ -839,6 +844,10 @@ class ActivationMinerPool(ActivationMiner, BaseMiningPoolMiner):
 class ActivationMinerHF(ActivationMiner, BaseHuggingFaceMiner):
     pass
 
+class ActivationMinerServer(ActivationMiner, BaseValidatorServerMiner):
+    pass
+
+
 class ParallelActivationMiner(ActivationMiner, IslandMiner):
     pass
 
@@ -846,6 +855,9 @@ class ParallelActivationMinerPool(ParallelActivationMiner, BaseMiningPoolMiner):
     pass
 
 class ParallelActivationMinerHF(ParallelActivationMiner, BaseHuggingFaceMiner):
+    pass
+
+class ParallelActivationMinerServer(ParallelActivationMiner, BaseValidatorServerMiner):
     pass
 
 class ParallelLossMiner(LossMiner, IslandMiner):
@@ -857,17 +869,25 @@ class LossMinerPool(LossMiner, BaseMiningPoolMiner):
 class LossMinerHF(LossMiner, BaseHuggingFaceMiner):
     pass
 
+class LossMinerServer(LossMiner, BaseValidatorServerMiner):
+    pass
+
 class ParallelLossMinerPool(ParallelLossMiner, BaseMiningPoolMiner):
     pass
 
 class ParallelLossMinerHF(ParallelLossMiner, BaseHuggingFaceMiner):
     pass
 
+class ParallelLossMinerServer(ParallelLossMiner, BaseValidatorServerMiner):
+    pass
 
 class SimpleMinerPool(SimpleMiner, BaseMiningPoolMiner):
     pass
 
 class SimpleMinerHF(SimpleMiner, BaseHuggingFaceMiner):
+    pass
+
+class SimpleMinerServer(SimpleMiner, BaseValidatorServerMiner):
     pass
 
 class MinerFactory:
@@ -898,5 +918,16 @@ class MinerFactory:
                     return LossMinerHF(config)
                 else:
                     return ParallelLossMinerHF(config)
+        elif platform == 'server':
+            if miner_type == "activation":
+                if core_count == 1:
+                    return ActivationMinerServer(config)
+                else:
+                    return ParallelActivationMinerServer(config)
+            elif miner_type == "loss":
+                if core_count == 1:
+                    return LossMinerServer(config)
+                else:
+                    return ParallelLossMinerServer(config)
         
         raise ValueError(f"Unknown miner type: {miner_type} or platform: {platform}")

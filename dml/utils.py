@@ -59,3 +59,22 @@ def calculate_tree_depth(expression: str) -> int:
         raise ValueError("Mismatched parentheses in the expression.")
 
     return max_depth
+
+
+def get_validator_urls(metagraph) -> list[str]:
+    """Get validator URLs from metagraph."""
+    validator_urls = []
+    
+    for uid in range(len(metagraph.uids)):
+        # Check if validator has permit and sufficient stake
+        if metagraph.S[uid] > 5:
+            # Get validator URL from axon info
+            if metagraph.axons[uid].ip and metagraph.axons[uid].port:
+                if metagraph.axons[uid].ip == "55.55.55.55":
+                    #for testing purposes
+                    url = f"http://127.0.0.1:8000"
+                else:
+                    url = f"http://{metagraph.axons[uid].ip}:{metagraph.axons[uid].port}"
+                validator_urls.append(url)
+    
+    return validator_urls
