@@ -8,6 +8,7 @@ from typing import Dict, Any, List
 import logging
 from huggingface_hub import list_repo_commits
 from dml.configs.config import config
+from dml.gene_io import load_individual_from_json, save_individual_to_json
 
 def load_test_datasets():
     """Load samples from different datasets including text data for signature computation"""
@@ -151,9 +152,9 @@ class GeneRecordManager:
         self.records[miner_hotkey] = {
             'gene_hash': gene_hash,
             'timestamp': timestamp,
-            'performance': performance
+            'performance': performance,
+            'expr': str(expr) if expr else None
         }
-
         
         
         if expr is not None:
@@ -169,10 +170,8 @@ class GeneRecordManager:
                     self._save_expression_registry()
             #if func_signature is None?
         
-        try:
-            self._save_records()
-        except:
-            breakpoint()
+        
+        self._save_records()
 
     def is_expression_duplicate(self, expr) -> bool:
         """Check if an expression has been used before by any miner"""

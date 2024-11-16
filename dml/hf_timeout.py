@@ -4,8 +4,8 @@ from requests.exceptions import Timeout
 import time
 
 class TimeoutHfApi(HfApi):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
 
     @timeout_decorator.timeout(120, timeout_exception=Timeout)
     def list_repo_files_with_timeout(self, repo_id, **kwargs):

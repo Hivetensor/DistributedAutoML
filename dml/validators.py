@@ -1,3 +1,5 @@
+import json
+import tempfile
 import heapq
 import logging
 import os
@@ -43,7 +45,7 @@ class BaseValidator(ABC):
         self.penalty_factor = config.Validator.time_penalty_factor
         self.penalty_max_time = config.Validator.time_penalty_max_time
 
-        self.api = TimeoutHfApi()
+        self.api = TimeoutHfApi(token=self.config.hf_token)
         self.max_retries = 3
         self.retry_delay = 2
 
@@ -132,7 +134,7 @@ class BaseValidator(ABC):
         try:
             accuracy_matrix = torch.stack([filtered_scores_dict[h] for h in hotkeys])
         except:
-            raise ValueError(f"Incorrect values passed: {accuracy_matrix}")
+            raise ValueError(f"Incorrect values passed: {filtered_scores_dict}")
         
         # Get ranks for each dataset (column)
         # -accuracy_matrix because we want highest accuracy to get rank 1
@@ -171,6 +173,9 @@ class BaseValidator(ABC):
         accuracy_scores = {}
         set_seed(self.seed)
 
+        self.gene_record_manager._load_expression_registry()
+        self.gene_record_manager._load_records()
+
         logging.info("Starting validation cycle")
         self.bittensor_network.sync(lite=True)
         
@@ -187,7 +192,8 @@ class BaseValidator(ABC):
         for hotkey, record in records.items():
             if record['performance'] is None:
                 try:
-                    gene = record['expr']  # Assuming we store the expr in record
+                    
+                    gene, function = load_individual_from_json(data={'expression':record['expr']},pset=self.pset, toolbox=self.toolbox)  # Assuming we store the expr in record
                     accuracy_score = self.evaluate_individual(gene, datasets)
                     record['performance'] = accuracy_score.tolist()
                     accuracy_scores[hotkey] = accuracy_score
@@ -230,6 +236,47 @@ class BaseValidator(ABC):
                     logging.info(f"  Average rank: {avg_ranks[hotkey]:.2f}")
                 except:
                     pass
+
+            # Update losses to HF repo periodically
+            current_time = time.time()
+            if not hasattr(self, 'last_hf_update'):
+                self.last_hf_update = 0
+            
+            if current_time - self.last_hf_update > self.config.Validator.hf_update_interval:
+                logging.info("Updating losses to Hugging Face repo")
+                try:
+                    # Format all records into single json
+                    records_json = {
+                        'timestamp': current_time,
+                        'records': {}
+                    }
+                    
+                    for hotkey, record in self.gene_record_manager.records.items():
+                        records_json['records'][hotkey] = {
+                            'performance': record['performance'],
+                            'timestamp': record['timestamp'],
+                            'gene': record['expr'] if record['expr'] is not None else None
+                        }
+                    
+                    # Create temp file and push to HF
+                    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_file:
+                        json.dump(records_json, temp_file)
+                        temp_file_path = temp_file.name
+
+                    try:
+                        self.api.upload_file(
+                            path_or_fileobj=temp_file_path,
+                            path_in_repo="loss_records.json",
+                            repo_id=self.config.Validator.losses_repo,
+                            commit_message=f"Update losses {time.strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        self.last_hf_update = current_time
+                        logging.info("Successfully updated losses to Hugging Face")
+                    finally:
+                        os.unlink(temp_file_path)
+                        
+                except Exception as e:
+                    logging.error(f"Failed to update losses to Hugging Face: {e}")
                 
 
 
