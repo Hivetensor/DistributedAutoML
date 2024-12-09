@@ -38,7 +38,7 @@ from dml.destinations import (
     HuggingFacePushDestination,
     HFChainPushDestination,
 )
-from dml.utils import set_seed, calculate_tree_depth
+from dml.utils import set_seed, calculate_tree_depth, compute_chain_hash
 
 
 LOCAL_STORAGE_PATH = "./checkpoints"
@@ -67,6 +67,7 @@ class BaseMiner(ABC, PushMixin):
             "pushed": False,
             "push_attempts": 0,
             "max_push_attempts": 3,  # Maximum number of push attempts
+            "hash": None,
         }
 
         # Initialize record keeping
@@ -152,14 +153,22 @@ class BaseMiner(ABC, PushMixin):
         finally:
             self._save_push_record()
 
+    def get_hash(self, individual):
+        """Gets the hash of an individual's gene expression"""
+        return compute_chain_hash(str(individual))
+
     def update_best_solution(self, individual, generation):
         """Update the best solution if new one is better"""
         current_fitness = individual.fitness.values[0]
-        if current_fitness > self.best_solution["fitness"]:
+        current_hash = self.get_hash(individual)
+
+        if (current_fitness > self.best_solution["fitness"]) \
+            and (current_hash != self.best_solution["hash"]):
             self.best_solution["individual"] = deepcopy(individual)
             self.best_solution["fitness"] = current_fitness
             self.best_solution["pushed"] = False
             self.best_solution["push_attempts"] = 0
+            self.best_solution["hash"] = current_hash
             logging.info(
                 f"New best solution found at generation {generation} with fitness {current_fitness:.4f}"
             )
@@ -234,18 +243,23 @@ class BaseMiner(ABC, PushMixin):
         self.emigrate_genes(best_gene)
         return self.immigrate_genes()
 
-    def create_baseline_model(self):
-        return BaselineNN(input_size=28 * 28, hidden_size=128, output_size=10).to(
-            self.device
-        )
+    def create_baseline_model(self, dataset_name):
+        return get_model_for_dataset(dataset_name).to(self.device), torch.nn.MSELoss()
 
-    def measure_baseline(self):
-        set_seed(self.seed)
-        train_loader, val_loader = self.load_data()
-        baseline_model = self.create_baseline_model()
-        self.train(baseline_model, train_loader)
-        self.baseline_accuracy = self.evaluate(baseline_model, val_loader)
-        logging.info(f"Baseline model accuracy: {self.baseline_accuracy:.4f}")
+    def measure_baseline(self, datasets):
+        fitness = 0.0
+        for dataset in datasets:
+            model = self.create_baseline_model(dataset.name)
+            try:
+                self.train(model, train_loader=dataset.train_loader)
+                fitness += (
+                    self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
+                )
+            except Exception as e:
+                logging.error(e)
+                return (0.0,)
+        logging.info(f"Baseline model accuracy: {fitness:.4f}")
+        return (fitness,)
 
     def save_checkpoint(
         self,
@@ -358,23 +372,22 @@ class BaseMiner(ABC, PushMixin):
         )
 
     def mine(self):
-        self.measure_baseline()
         datasets = load_datasets(
-            self.config.Miner.dataset_names, batch_size=self.config.Miner.batch_size
+            self.config.Miner.dataset_names, 
+            batch_size=self.config.Miner.batch_size,
+            seed=self.config.Miner.seed
         )
+        self.measure_baseline(datasets)
 
         checkpoint_file = os.path.join(LOCAL_STORAGE_PATH, "evolution_checkpoint.pkl")
 
         # Check if checkpoint exists
         if os.path.exists(checkpoint_file):
-            population, hof, best_individual_all_time, start_generation = (
-                self.load_checkpoint(checkpoint_file)
-            )
+            population, hof, best_individual_all_time, start_generation = self.load_checkpoint(checkpoint_file)
             if best_individual_all_time is not None:
                 self.best_solution["individual"] = best_individual_all_time
-                self.best_solution["fitness"] = best_individual_all_time.fitness.values[
-                    0
-                ]
+                self.best_solution["fitness"] = best_individual_all_time.fitness.values[0]
+                self.best_solution["hash"] = self.get_hash(best_individual_all_time)
             logging.info(f"Resuming from generation {start_generation}")
         else:
             population = self.toolbox.population(n=self.config.Miner.population_size)
@@ -400,13 +413,12 @@ class BaseMiner(ABC, PushMixin):
             best_updated = self.update_best_solution(best_in_gen, generation)
 
             # Check if we should attempt a push
-            if (
-                best_updated or not self.last_push_success
-            ) and self.should_attempt_push():
+            if (best_updated or not self.last_push_success) and self.should_attempt_push():
                 self.attempt_push(self.best_solution["individual"], generation)
 
             # Select the next generation individuals
             offspring = self.toolbox.select(population, len(population))
+
             # Clone the selected individuals
             offspring = list(map(self.toolbox.clone, offspring))
 
@@ -415,9 +427,7 @@ class BaseMiner(ABC, PushMixin):
                 if random.random() < 0.5:
                     if i + 1 < len(offspring):
                         child1, child2 = offspring[i], offspring[i + 1]
-                        safe_temp1, safe_temp2 = self.toolbox.clone(
-                            child1
-                        ), self.toolbox.clone(child2)
+                        safe_temp1, safe_temp2 = self.toolbox.clone(child1), self.toolbox.clone(child2)
                         self.toolbox.mate(child1, child2)
 
                         if child1.height > self.config.Miner.gp_tree_height:
@@ -968,9 +978,7 @@ class LossMiner(BaseMiner):
 
     def create_model(self, individual, dataset_name):
         set_seed(self.seed)
-        return get_model_for_dataset(dataset_name), self.toolbox.compile(
-            expr=individual
-        )
+        return get_model_for_dataset(dataset_name).to(self.device), self.toolbox.compile(expr=individual)
 
     @staticmethod
     def safe_evaluate(func, outputs, labels):
@@ -1040,14 +1048,9 @@ class LossMiner(BaseMiner):
                     correct += predicted.eq(targets).sum().item()
         return correct / total
 
-    def create_baseline_model(self):
-        return (
-            BaselineNN(input_size=28 * 28, hidden_size=128, output_size=10).to(
-                self.device
-            ),
-            torch.nn.MSELoss(),
-        )
-
+    def create_baseline_model(self, dataset_name):
+        set_seed(self.seed)
+        return get_model_for_dataset(dataset_name).to(self.device), torch.nn.MSELoss()
 
 class SimpleMiner(BaseMiner):
     def load_data(self):

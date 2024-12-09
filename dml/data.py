@@ -1,10 +1,13 @@
 from dataclasses import dataclass
 import requests
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Sampler
 from torchvision import datasets, transforms
 from typing import Any, List, Tuple, Optional, Union
 import os 
+import numpy as np
+import random
+from dml.utils import set_seed
 
 @dataclass
 class DatasetSpec:
@@ -19,10 +22,25 @@ class DatasetSpec:
     training_iterations: int = 1
     weight: float = 1.0  
 
-def get_mnist_loaders(
-    batch_size: int = 32,
-    num_workers: int = 2
-) -> Tuple[DataLoader, DataLoader]:
+class DeterministicSampler(Sampler):
+    """
+    Sampler for a single shuffle at initialization to ensure consistency across validators
+    """
+    def __init__(self, n):
+        self.idx = torch.randperm(n).tolist()
+
+    def __iter__(self):
+        return iter(self.idx)
+
+    def __len__(self):
+        return len(self.idx)
+
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
+def get_mnist_loaders(batch_size: int = 32, num_workers: int = 2, seed: int = 42) -> Tuple[DataLoader, DataLoader]:
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
@@ -40,16 +58,28 @@ def get_mnist_loaders(
         train=False,
         transform=transform
     )
+    set_seed(seed)
+    train_sampler = DeterministicSampler(len(train_dataset))
+    val_sampler = DeterministicSampler(len(val_dataset))
     
     return (
-        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers),
-        DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=train_sampler
+        ),
+        DataLoader(
+            val_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=val_sampler
+        )
     )
 
-def get_cifar10_loaders(
-    batch_size: int = 32,
-    num_workers: int = 2
-) -> Tuple[DataLoader, DataLoader]:
+def get_cifar10_loaders(batch_size: int = 32, num_workers: int = 2, seed: int = 42) -> Tuple[DataLoader, DataLoader]:
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
@@ -67,16 +97,28 @@ def get_cifar10_loaders(
         train=False,
         transform=transform
     )
+    set_seed(seed)
+    train_sampler = DeterministicSampler(len(train_dataset))
+    val_sampler = DeterministicSampler(len(val_dataset))
     
     return (
-        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers),
-        DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=train_sampler
+        ),
+        DataLoader(
+            val_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=val_sampler
+        )
     )
 
-def get_cifar100_loaders(
-    batch_size: int = 32,
-    num_workers: int = 2
-) -> Tuple[DataLoader, DataLoader]:
+def get_cifar100_loaders(batch_size: int = 32, num_workers: int = 2, seed: int = 42) -> Tuple[DataLoader, DataLoader]:
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(
@@ -97,17 +139,33 @@ def get_cifar100_loaders(
         train=False,
         transform=transform
     )
+    set_seed(seed)
+    train_sampler = DeterministicSampler(len(train_dataset))
+    val_sampler = DeterministicSampler(len(val_dataset))
     
     return (
-        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers),
-        DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=train_sampler
+        ),
+        DataLoader(
+            val_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=val_sampler
+        )
     )
 
 def get_imagenet_1k_loaders(
     data_dir: str = './data/imagenet',
     batch_size: int = 32,
     num_workers: int = 4,
-    image_size: int = 224
+    image_size: int = 224,
+    seed: int = 42,
 ) -> Tuple[DataLoader, DataLoader]:
     """
     ImageNet-1K data loaders with standard augmentation
@@ -144,24 +202,26 @@ def get_imagenet_1k_loaders(
         split='val',
         transform=val_transform
     )
+    set_seed(seed)
+    train_sampler = DeterministicSampler(len(train_dataset))
+    val_sampler = DeterministicSampler(len(val_dataset))
     
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True
+    return (
+        DataLoader(
+            train_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=train_sampler
+        ),
+        DataLoader(
+            val_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=val_sampler
+        )
     )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True
-    )
-    
-    return train_loader, val_loader
 
 class ShakespeareDataset(Dataset):
     def __init__(
@@ -201,14 +261,12 @@ class ShakespeareDataset(Dataset):
         y = chunk[1:]
         return x, y
     
-
-
-
 def get_shakespeare_loaders(
     text_path: str = './data/shakespeare.txt',
     batch_size: int = 64,
     seq_length: int = 256,
-    num_workers: int = 1
+    num_workers: int = 1,
+    seed: int = 42,
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Shakespeare dataset loaders for character-level language modeling
@@ -224,25 +282,29 @@ def get_shakespeare_loaders(
         seq_length=seq_length,
         train=False
     )
+    set_seed(seed)
+    train_sampler = DeterministicSampler(len(train_dataset))
+    val_sampler = DeterministicSampler(len(val_dataset))
     
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers
+            train_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=train_sampler
     )
     
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers
+            val_dataset, 
+            batch_size=batch_size, 
+            num_workers=num_workers, 
+            worker_init_fn=seed_worker,
+            sampler=val_sampler
     )
     
     return train_loader, val_loader, train_dataset.vocab_size
 
-
-def load_datasets(dataset_names: Union[str, List[str]], batch_size: int = 32) -> List[DatasetSpec]:
+def load_datasets(dataset_names: Union[str, List[str]], batch_size: int = 32, seed: int = 42) -> List[DatasetSpec]:
     """
     Load specified datasets based on input names.
     
@@ -303,10 +365,10 @@ def load_datasets(dataset_names: Union[str, List[str]], batch_size: int = 32) ->
         config = dataset_configs[name]
         
         if name == "shakespeare":
-            train_loader, val_loader, vocab_size = config["loader"](batch_size=batch_size)
+            train_loader, val_loader, vocab_size = config["loader"](batch_size=batch_size, seed=seed)
             config["output_size"] = vocab_size
         else:
-            train_loader, val_loader = config["loader"](batch_size=batch_size)
+            train_loader, val_loader = config["loader"](batch_size=batch_size, seed=seed)
         
         spec = DatasetSpec(
             name=name,
