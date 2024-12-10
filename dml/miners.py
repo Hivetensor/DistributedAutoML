@@ -1,45 +1,38 @@
+import json
+import logging
+import operator
+import os
+import queue
+import random
+import time
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from huggingface_hub import HfApi, Repository
-import os
+from multiprocessing import Queue, Process, Value
+from typing import Any
+
+import dill
+import numpy as np
 import requests
 import torch
+from bittensor.core.errors import MetadataError
+from deap import algorithms, base, creator, tools, gp
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
-import logging
-import numpy as np
-import random
-import math
-import dill
-import operator
-import multiprocessing as mp
-from multiprocessing import Queue, Process, Pool, Value
-import time
-import queue
-import json
 
-from bittensor.core.errors import MetadataError
-
-from deap import algorithms, base, creator, tools, gp
-from functools import partial
-
-from dml.record import GeneRecordManager
 from dml.chain.chain_manager import ChainManager
 from dml.data import load_datasets
-from dml.deap_individual import FitnessMax, Individual
-from dml.models import BaselineNN, EvolvableNN, get_model_for_dataset
-from dml.ops import create_pset
-from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
-from dml.gp_fix import SafePrimitiveTree
 from dml.destinations import (
     PushMixin,
     PoolPushDestination,
-    HuggingFacePushDestination,
     HFChainPushDestination,
 )
-from dml.utils import set_seed, calculate_tree_depth, compute_chain_hash
-
+from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
+from dml.gp_fix import SafePrimitiveTree
+from dml.models import EvolvableNN, get_model_for_dataset
+from dml.ops import create_pset
+from dml.record import GeneRecordManager
+from dml.utils import set_seed, compute_chain_hash
 
 LOCAL_STORAGE_PATH = "./checkpoints"
 os.makedirs(LOCAL_STORAGE_PATH, exist_ok=True)
@@ -113,9 +106,9 @@ class BaseMiner(ABC, PushMixin):
 
         # If last push failed and we haven't exceeded max attempts
         if (
-            not self.last_push_success
-            and self.best_solution["push_attempts"]
-            < self.best_solution["max_push_attempts"]
+                not self.last_push_success
+                and self.best_solution["push_attempts"]
+                < self.best_solution["max_push_attempts"]
         ):
             return True
 
@@ -163,7 +156,7 @@ class BaseMiner(ABC, PushMixin):
         current_hash = self.get_hash(individual)
 
         if (current_fitness > self.best_solution["fitness"]) \
-            and (current_hash != self.best_solution["hash"]):
+                and (current_hash != self.best_solution["hash"]):
             self.best_solution["individual"] = deepcopy(individual)
             self.best_solution["fitness"] = current_fitness
             self.best_solution["pushed"] = False
@@ -176,7 +169,7 @@ class BaseMiner(ABC, PushMixin):
         return False
 
     def initialize_deap(self):
-        from dml.deap_individual import FitnessMax, Individual
+        from dml.deap_individual import Individual
 
         self.toolbox = base.Toolbox()
         self.pset = create_pset()
@@ -253,7 +246,7 @@ class BaseMiner(ABC, PushMixin):
             try:
                 self.train(model, train_loader=dataset.train_loader)
                 fitness += (
-                    self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
+                        self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
                 )
             except Exception as e:
                 logging.error(e)
@@ -262,15 +255,15 @@ class BaseMiner(ABC, PushMixin):
         return (fitness,)
 
     def save_checkpoint(
-        self,
-        population,
-        hof,
-        best_individual_all_time,
-        generation,
-        random_state,
-        torch_rng_state,
-        numpy_rng_state,
-        checkpoint_file,
+            self,
+            population,
+            hof,
+            best_individual_all_time,
+            generation,
+            random_state,
+            torch_rng_state,
+            numpy_rng_state,
+            checkpoint_file,
     ):
         checkpoint = {
             "population": population,
@@ -354,7 +347,7 @@ class BaseMiner(ABC, PushMixin):
             try:
                 self.train(model, train_loader=dataset.train_loader)
                 fitness += (
-                    self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
+                        self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
                 )
             except Exception as e:
                 logging.error(e)
@@ -373,7 +366,7 @@ class BaseMiner(ABC, PushMixin):
 
     def mine(self):
         datasets = load_datasets(
-            self.config.Miner.dataset_names, 
+            self.config.Miner.dataset_names,
             batch_size=self.config.Miner.batch_size,
             seed=self.config.Miner.seed
         )
@@ -514,36 +507,55 @@ class BaseHuggingFaceMiner(BaseMiner):
 class BaseMiningPoolMiner(BaseMiner):
     def __init__(self, config):
         super().__init__(config)
-        self.push_destinations.append(
-            PoolPushDestination(config.Miner.pool_url, config.bittensor_network.wallet)
+        self.pool_destination = PoolPushDestination(
+            config.Miner.pool_url,
+            config.bittensor_network.wallet,
+            config.Miner.miner_operation
         )
-        self.pool_url = config.Miner.pool_url
-
-    # TODO add a timestamp or sth to requests to prevent spoofing signatures
-    def register_with_pool(self):
-        data = self._prepare_request_data("register")
-        response = requests.post(f"{self.pool_url}/register", json=data)
-        return response.json()["success"]
+        self.push_destinations.append(self.pool_destination)
+        self.miner_operation = config.Miner.miner_operation
 
     def get_task_from_pool(self):
-        data = self._prepare_request_data("get_task")
-        response = requests.get(f"{self.pool_url}/get_task", json=data)
+        """Get a task from the pool"""
+        response = self.pool_destination.make_authenticated_request(
+            "get_task",
+            method="get",
+            task_type=self.miner_operation
+        )
         return response.json()
 
-    def submit_result_to_pool(self, best_genome):
-        data = self._prepare_request_data("submit_result")
-        data["result"] = save_individual_to_json(best_genome)
-        response = requests.post(f"{self.pool_url}/submit_result", json=data)
+    def submit_evaluation(self, function_id: str, score: float):
+        """Submit an evaluation of someone else's function"""
+        response = self.pool_destination.make_authenticated_request(
+            "submit_evaluation",
+            function_id=function_id,
+            score=score
+        )
         return response.json()["success"]
 
-    def get_rewards_from_pool(self):
-        data = self._prepare_request_data("get_rewards")
-        response = requests.get(f"{self.pool_url}/get_rewards", json=data)
-        return response.json()
+    def submit_evolution(self, original_id: str, evolved_function: Any):
+        """Submit an evolved function"""
+        response = self.pool_destination.make_authenticated_request(
+            "submit_evolution",
+            original_id=original_id,
+            evolved_function=save_individual_to_json(evolved_function)
+        )
+        return response.json()["success"]
 
-    def update_config_with_task(self, task):
-        # Update miner config with task-specific parameters if needed
-        pass
+    def mine(self):
+        if self.miner_operation == "evaluate":
+            return self.evaluate_others()
+        else:
+            return super().mine()
+
+    def evaluate_others(self):
+        """Main loop for evaluation mode"""
+        while True:
+            task = self.get_task_from_pool()
+            if task.get("function_id"):
+                score = self.evaluate_function(task["function"])
+                self.submit_evaluation(task["function_id"], score)
+            time.sleep(10)
 
 
 class IslandMiner(BaseMiner):
@@ -567,15 +579,15 @@ class IslandMiner(BaseMiner):
             logging.warning(f"Setting migrants_per_round to {self.migrants_per_round}")
 
     def save_checkpoint(
-        self,
-        population,
-        generation,
-        local_best,
-        local_best_fitness,
-        random_state,
-        torch_rng_state,
-        numpy_rng_state,
-        checkpoint_file,
+            self,
+            population,
+            generation,
+            local_best,
+            local_best_fitness,
+            random_state,
+            torch_rng_state,
+            numpy_rng_state,
+            checkpoint_file,
     ):
         """Saves island checkpoint"""
         checkpoint = {
@@ -604,18 +616,16 @@ class IslandMiner(BaseMiner):
         return population, generation, local_best, local_best_fitness
 
     def run_island(
-        self,
-        island_id,
-        migration_in_queue,
-        migration_out_queue,
-        stats_queue,
-        global_best_queue,
+            self,
+            island_id,
+            migration_in_queue,
+            migration_out_queue,
+            stats_queue,
+            global_best_queue,
     ):
         random.seed(self.seed + island_id)
         torch.manual_seed(self.seed + island_id)
         np.random.seed(self.seed + island_id)
-
-        from dml.deap_individual import FitnessMax, Individual
 
         # Define checkpoint file path
         checkpoint_file = os.path.join(
@@ -661,7 +671,7 @@ class IslandMiner(BaseMiner):
                         local_best_fitness = ind.fitness.values[0]
 
             if (
-                local_best.fitness.values[0] > self.best_global_fitness.value
+                    local_best.fitness.values[0] > self.best_global_fitness.value
             ):  # Read is atomic
                 global_best_queue.put((island_id, deepcopy(local_best)))
                 logging.info(
@@ -786,11 +796,10 @@ class IslandMiner(BaseMiner):
                             source_island, candidate = best_candidate
 
                             if (
-                                best_overall is None
-                                or candidate.fitness.values[0]
-                                > best_overall.fitness.values[0]
+                                    best_overall is None
+                                    or candidate.fitness.values[0]
+                                    > best_overall.fitness.values[0]
                             ):
-
                                 best_overall = deepcopy(candidate)
                                 with self.best_global_fitness.get_lock():
                                     self.best_global_fitness.value = (
@@ -809,9 +818,9 @@ class IslandMiner(BaseMiner):
                         source_island, migrants = migration_out_queue.get_nowait()
                         for migrant in migrants:
                             if (
-                                best_overall is None
-                                or migrant.fitness.values[0]
-                                > best_overall.fitness.values[0]
+                                    best_overall is None
+                                    or migrant.fitness.values[0]
+                                    > best_overall.fitness.values[0]
                             ):
                                 best_overall = deepcopy(migrant)
                                 self.push_to_remote(
@@ -1052,6 +1061,7 @@ class LossMiner(BaseMiner):
         set_seed(self.seed)
         return get_model_for_dataset(dataset_name).to(self.device), torch.nn.MSELoss()
 
+
 class SimpleMiner(BaseMiner):
     def load_data(self):
         x_data = torch.linspace(0, 10, 100)
@@ -1157,7 +1167,13 @@ class MinerFactory:
         miner_type = config.Miner.miner_type
         platform = config.Miner.push_platform
         core_count = config.Miner.num_processes
+        operation = config.Miner.miner_operation
         if platform == "pool":
+            if not hasattr(config.Miner, "operation_type"):
+                raise ValueError("When using pool, must specify operation_type ('evolve' or 'evaluate') in config")
+
+            if operation not in ["evolve", "evaluate"]:
+                raise ValueError("operation_type must be either 'evolve' or 'evaluate'")
             if miner_type == "activation":
                 if core_count == 1:
                     return ActivationMinerPool(config)

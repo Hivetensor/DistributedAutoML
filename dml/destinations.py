@@ -69,20 +69,22 @@ class HuggingFacePushDestination(PushDestination):
             os.unlink(temp_file_path)
 
 class PoolPushDestination(PushDestination):
-    def __init__(self, pool_url, wallet):
+    def __init__(self, pool_url, wallet, miner_operation):
         self.pool_url = pool_url
         self.wallet = wallet
+        self.miner_operation = miner_operation
 
-    def push(self, gene, commit_message):
-        data = self._prepare_request_data("push_gene")
-        data["gene"] = save_individual_to_json(gene)
-        data["commit_message"] = commit_message
-        
-        response = requests.post(f"{self.pool_url}/push_gene", json=data)
-        if response.status_code == 200:
-            logging.info(f"Successfully pushed gene to pool: {commit_message}")
+    def make_authenticated_request(self, endpoint: str, method: str = "post", **data):
+        """Makes an authenticated request to the pool"""
+        auth_data = self._prepare_request_data(endpoint)
+        request_data = {**auth_data, **data}
+
+        if method.lower() == "get":
+            response = requests.get(f"{self.pool_url}/{endpoint}", json=request_data)
         else:
-            logging.error(f"Failed to push gene to pool: {response.text}")
+            response = requests.post(f"{self.pool_url}/{endpoint}", json=request_data)
+
+        return response
 
     def _prepare_request_data(self, message, timestamp = time.time()):
         return {
