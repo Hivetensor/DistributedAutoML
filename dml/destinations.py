@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 
 from dml.configs.config import config
 from dml.gene_io import save_individual_to_json
-from dml.chain.bittensor_network import BittensorNetwork
+from dml.chain.btt_connector import BittensorNetwork
 from dml.chain.chain_manager import SolutionId
 from dml.utils import compute_chain_hash
 
