@@ -9,7 +9,7 @@ def constrained_decay(n: int, ratio: float = 5.0):
     return normalized_decay.tolist() 
 
 class ValidatorConfig:
-    device = "cpu"
+    device = "cuda"
 
     validation_interval = 20
     validator_type = "loss"
