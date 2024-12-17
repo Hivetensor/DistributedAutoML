@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 
 from dml.configs.config import config
 from dml.gene_io import save_individual_to_json
+from dml.chain.bittensor_network import BittensorNetwork
 from dml.chain.chain_manager import SolutionId
 from dml.utils import compute_chain_hash
 
@@ -31,6 +32,11 @@ class HuggingFacePushDestination(PushDestination):
     def __init__(self, repo_name):
         self.repo_name = repo_name
         self.api = HfApi(token=config.hf_token)
+        bt_config = config.get_bittensor_config()
+        BittensorNetwork.initialize(bt_config)
+
+        config.bittensor_network = BittensorNetwork
+        
 
     def push(self, gene, commit_message, save_temp = config.Miner.save_temp_only):
 
@@ -41,7 +47,7 @@ class HuggingFacePushDestination(PushDestination):
         # Create a temporary file to store the gene data
         if save_temp: 
             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_file:
-                json.dump(save_individual_to_json(gene, hotkey=config.wallet.hotkey), temp_file)
+                json.dump(save_individual_to_json(gene, hotkey=config.bittensor_network.wallet.hotkey), temp_file)
                 temp_file_path = temp_file.name
 
         else:
@@ -52,7 +58,7 @@ class HuggingFacePushDestination(PushDestination):
                 f"{commit_message.replace('.', '_')}.json"
             )
             with open(temp_file_path, 'w') as temp_file:
-                json.dump(save_individual_to_json(gene, hotkey=config.wallet.hotkey), temp_file)
+                json.dump(save_individual_to_json(gene, hotkey=config.bittensor_network.wallet.hotkey), temp_file)
 
         try:
             # if not os.path.exists(self.repo_name):
