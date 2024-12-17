@@ -2,7 +2,7 @@ import time
 
 class MinerConfig:
     #TODO limit validator memory allowed to prevent DOS attacks 
-    device = "cpu"
+    device = "cuda"
     batch_size = 8
     checkpoint_save_dir = "checkpoints"
     check_registration_interval = 500
