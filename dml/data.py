@@ -5,9 +5,21 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 from torchvision import datasets, transforms
 from typing import Any, List, Tuple, Optional, Union
 import os 
-import numpy as np
-import random
-from dml.utils import set_seed
+import requests
+import tarfile
+
+def download_imagenette():
+    url = "https://s3.amazonaws.com/fast-ai-imageclas/imagenette2.tgz"
+    if not os.path.exists('./data/imagenette2'):
+        response = requests.get(url, stream=True)
+        with open('./data/imagenette2.tgz', 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        with tarfile.open('./data/imagenette2.tgz', 'r:gz') as tar:
+            tar.extractall(path='./data')
+        
+        os.remove('./data/imagenette2.tgz')
 
 @dataclass
 class DatasetSpec:
@@ -261,6 +273,8 @@ class ShakespeareDataset(Dataset):
         y = chunk[1:]
         return x, y
     
+
+
 def get_shakespeare_loaders(
     text_path: str = './data/shakespeare.txt',
     batch_size: int = 64,
@@ -304,23 +318,151 @@ def get_shakespeare_loaders(
     
     return train_loader, val_loader, train_dataset.vocab_size
 
-def load_datasets(dataset_names: Union[str, List[str]], batch_size: int = 32, seed: int = 42) -> List[DatasetSpec]:
+def get_imagenette_loaders(
+    batch_size: int = 32,
+    num_workers: int = 2
+) -> Tuple[DataLoader, DataLoader]:
     """
-    Load specified datasets based on input names.
-    
-    Args:
-        dataset_names: Single dataset name or list of dataset names
-        batch_size: Batch size for data loaders
-    
-    Returns:
-        List of DatasetSpec objects for requested datasets
+    Imagenette dataset loaders with standard augmentation.
+    Imagenette is a subset of 10 easily classified classes from ImageNet.
     """
-    # Convert single string to list for consistent processing
-    if isinstance(dataset_names, str):
-        dataset_names = [dataset_names]
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
     
-    # Dictionary mapping dataset names to their loader functions and specs
-    dataset_configs = {
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+
+    download_imagenette()
+
+    # Imagenette uses ImageFolder since it's structured like ImageNet
+    train_dataset = datasets.ImageFolder(
+        './data/imagenette2/train',
+        transform=train_transform
+    )
+    
+    val_dataset = datasets.ImageFolder(
+        './data/imagenette2/val',
+        transform=val_transform
+    )
+    
+    return (
+        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers),
+        DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    )
+
+def get_fgvc_aircraft_loaders(
+    batch_size: int = 32,
+    num_workers: int = 2
+) -> Tuple[DataLoader, DataLoader]:
+    """
+    FGVC Aircraft dataset loaders with standard augmentation
+    """
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+    
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+    
+    train_dataset = datasets.FGVCAircraft(
+        './data',
+        split='train',
+        download=True,
+        transform=train_transform
+    )
+    
+    val_dataset = datasets.FGVCAircraft(
+        './data',
+        split='test',  # FGVCAircraft uses 'test' instead of 'val'
+        download=True,
+        transform=val_transform
+    )
+    
+    return (
+        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers),
+        DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    )
+
+
+
+def get_flowers102_loaders(
+    batch_size: int = 32,
+    num_workers: int = 2
+) -> Tuple[DataLoader, DataLoader]:
+    """
+    Oxford Flowers-102 dataset loaders with standard augmentation
+    """
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+    
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    ])
+    
+    train_dataset = datasets.Flowers102(
+        './data',
+        split='train',
+        download=True,
+        transform=train_transform
+    )
+    
+    val_dataset = datasets.Flowers102(
+        './data',
+        split='val',
+        download=True,
+        transform=val_transform
+    )
+    
+    return (
+        DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers),
+        DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    )
+
+
+dataset_configs = {
         "mnist": {
             "loader": get_mnist_loaders,
             "input_size": 28*28,
@@ -353,8 +495,48 @@ def load_datasets(dataset_names: Union[str, List[str]], batch_size: int = 32, se
             "hidden_size": 32,
             "learning_rate": 3e-4,
             "weight": 10.0
+        },
+        "flowers102": {
+            "loader": get_flowers102_loaders,
+            "input_size": (3, 224, 224),
+            "output_size": 102,  # Flowers102 has 102 classes
+            "weight": 1.5,
+            "learning_rate": 0.01
+        },
+        "fgvc_aircraft": {
+            "loader": get_fgvc_aircraft_loaders,
+            "input_size": (3, 224, 224),
+            "output_size": 100,  # FGVC Aircraft has 100 classes
+            "weight": 1.5,
+            "learning_rate": 0.01
+        },
+        "imagenette": {
+            "loader": get_imagenette_loaders,
+            "input_size": (3, 224, 224),
+            "output_size": 10,  # Imagenette has 10 classes
+            "weight": 1.0,
+            "learning_rate": 0.01
         }
     }
+
+def load_datasets(dataset_names: Union[str, List[str]], batch_size: int = 32) -> List[DatasetSpec]:
+    """
+    Load specified datasets based on input names.
+    
+    Args:
+        dataset_names: Single dataset name or list of dataset names
+        batch_size: Batch size for data loaders
+    
+    Returns:
+        List of DatasetSpec objects for requested datasets
+    """
+    # Convert single string to list for consistent processing
+    if isinstance(dataset_names, str):
+        dataset_names = [dataset_names]
+    
+    # Dictionary mapping dataset names to their loader functions and specs
+    
+
     
     dataset_specs = []
     

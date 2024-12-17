@@ -41,7 +41,7 @@ class HuggingFacePushDestination(PushDestination):
         # Create a temporary file to store the gene data
         if save_temp: 
             with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.json') as temp_file:
-                json.dump(save_individual_to_json(gene), temp_file)
+                json.dump(save_individual_to_json(gene, hotkey=config.wallet.hotkey), temp_file)
                 temp_file_path = temp_file.name
 
         else:
@@ -52,7 +52,7 @@ class HuggingFacePushDestination(PushDestination):
                 f"{commit_message.replace('.', '_')}.json"
             )
             with open(temp_file_path, 'w') as temp_file:
-                json.dump(save_individual_to_json(gene), temp_file)
+                json.dump(save_individual_to_json(gene, hotkey=config.wallet.hotkey), temp_file)
 
         try:
             # if not os.path.exists(self.repo_name):
@@ -99,7 +99,7 @@ class ChainPushDestination(PushDestination):
     def push(self, gene, commit_message):
         try:
             # Compute solution hash using the provided function
-            solution_hash = compute_chain_hash(str(gene))
+            solution_hash = compute_chain_hash(str(gene)+config.gene_repo)
             logging.info(f"Pushing gene {str(gene)} with hash {solution_hash}")
             
             # Get current block number

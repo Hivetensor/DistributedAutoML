@@ -50,9 +50,9 @@ def safe_exp(x):
 def generate_random():
     return torch.tensor(random.uniform(-1, 1), device=device)
 
-def create_pset():
+def create_pset(argument_count = 2):
 
-    pset = gp.PrimitiveSet("MAIN", 2)
+    pset = gp.PrimitiveSet("MAIN", argument_count)
     
     # Basic arithmetic operations
     pset.addPrimitive(safe_add, 2)

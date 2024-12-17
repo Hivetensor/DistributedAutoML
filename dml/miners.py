@@ -4,6 +4,7 @@ from huggingface_hub import HfApi, Repository
 import os
 import requests
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
@@ -28,9 +29,8 @@ from dml.record import GeneRecordManager
 from dml.chain.chain_manager import ChainManager
 from dml.data import load_datasets
 from dml.deap_individual import FitnessMax, Individual
-from dml.models import BaselineNN, EvolvableNN, get_model_for_dataset
+from dml.models import BaselineNN, EvolvableNN, get_model_for_dataset, TorchEvolvedOptimizer
 from dml.ops import create_pset
-from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
 from dml.gp_fix import SafePrimitiveTree
 from dml.destinations import (
     PushMixin,
@@ -129,14 +129,17 @@ class BaseMiner(ABC, PushMixin):
             commit_message = f"{generation}_{individual.fitness.values[0]:.4f}"
 
             # Attempt the push
-            super().push_to_remote(individual, commit_message)
+            success = super().push_to_remote(individual, commit_message)
 
-            # Update tracking on success
-            self.last_push_attempt = current_time
-            self.last_push_success = True
-            self.best_solution["pushed"] = True
-            self.best_solution["push_attempts"] = 0  # Reset attempts counter
-            logging.info(f"Successfully pushed solution at generation {generation}")
+            if success:
+                # Update tracking on success
+                self.last_push_attempt = current_time
+                self.last_push_success = True
+                self.best_solution["pushed"] = True
+                self.best_solution["push_attempts"] = 0  # Reset attempts counter
+                logging.info(f"Successfully pushed solution at generation {generation}")
+            else:
+                raise MetadataError("Failed Push - Reason unknown")
 
         except MetadataError as e:
             # Update tracking on failure
@@ -208,40 +211,6 @@ class BaseMiner(ABC, PushMixin):
                 operator.attrgetter("height"), self.config.Miner.gp_tree_height
             ),
         )
-
-    def emigrate_genes(self, best_gene):
-        # Submit best gene
-        gene_data = []
-        for gene in best_gene:
-            gene_data.append(save_individual_to_json(gene=gene))
-        response = requests.post(
-            f"{self.migration_server_url}/submit_gene", json=gene_data
-        )
-
-        if response.status_code == 200:
-            return True
-        else:
-            return False
-
-    def immigrate_genes(self):
-        # Get mixed genes from server
-        response = requests.get(f"{self.migration_server_url}/get_mixed_genes")
-        received_genes_data = response.json()
-
-        if not self.migration_server_url:
-            return []
-
-        return [
-            load_individual_from_json(
-                gene_data=gene_data, function_decoder=self.function_decoder
-            )
-            for gene_data in received_genes_data
-        ]
-
-    # One migration cycle
-    def migrate_genes(self, best_gene):
-        self.emigrate_genes(best_gene)
-        return self.immigrate_genes()
 
     def create_baseline_model(self, dataset_name):
         return get_model_for_dataset(dataset_name).to(self.device), torch.nn.MSELoss()
@@ -331,9 +300,9 @@ class BaseMiner(ABC, PushMixin):
 
         return population, hof, best_individual_all_time, generation
 
-    @abstractmethod
-    def load_data(self):
-        pass
+    # @abstractmethod
+    # def load_data(self):
+    #     pass
 
     @abstractmethod
     def create_model(self, genome):
@@ -350,15 +319,18 @@ class BaseMiner(ABC, PushMixin):
     def create_n_evaluate(self, individual, datasets):
         fitness = 0.0
         for dataset in datasets:
-            model = self.create_model(individual, dataset.name)
-            try:
-                self.train(model, train_loader=dataset.train_loader)
-                fitness += (
-                    self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
-                )
-            except Exception as e:
-                logging.error(e)
-                return (0.0,)
+            for architecture in self.config.Miner.architectures[dataset.name]:
+
+                model = self.create_model(individual, dataset.name, architecture)
+                model[0].to(self.config.device)
+                try:
+                    self.train(model, train_loader=dataset.train_loader)
+                    fitness += (
+                        self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight * self.config.Miner.architectures_weights[architecture]
+                    )
+                except Exception as e:
+                    logging.error(e)
+                    return (0.0,)
 
         return (fitness,)
 
@@ -372,10 +344,9 @@ class BaseMiner(ABC, PushMixin):
         )
 
     def mine(self):
+        #self.measure_baseline()
         datasets = load_datasets(
-            self.config.Miner.dataset_names, 
-            batch_size=self.config.Miner.batch_size,
-            seed=self.config.Miner.seed
+            self.config.Miner.architectures.keys(), batch_size=self.config.Miner.batch_size
         )
         self.measure_baseline(datasets)
 
@@ -481,7 +452,7 @@ class BaseMiner(ABC, PushMixin):
                 f"Generation {generation}: Best fitness = {self.best_solution['fitness']:.4f}"
             )
 
-        return best_individual_all_time
+        return self.best_solution["individual"]
 
     @staticmethod
     def setup_logging(log_file="miner.log"):
@@ -637,7 +608,7 @@ class IslandMiner(BaseMiner):
             local_best_fitness = -float("inf")
             logging.info(f"Island {island_id} starting from scratch")
 
-        datasets = load_datasets(self.config.Miner.dataset_names)
+        datasets = load_datasets(self.config.Miner.architectures.keys())
 
         while generation < self.config.Miner.generations:
             # Evolution step
@@ -976,9 +947,11 @@ class LossMiner(BaseMiner):
         )
         return train_loader, val_loader
 
-    def create_model(self, individual, dataset_name):
+    def create_model(self, individual, dataset_name, architecture):
         set_seed(self.seed)
-        return get_model_for_dataset(dataset_name).to(self.device), self.toolbox.compile(expr=individual)
+        return get_model_for_dataset(dataset_name, architecture), self.toolbox.compile(
+            expr=individual
+        )
 
     @staticmethod
     def safe_evaluate(func, outputs, labels):
@@ -1101,6 +1074,108 @@ class SimpleMiner(BaseMiner):
         logging.info(f"Best fitness: {best_fitness}")
 
         return best_individual
+    
+
+class OptimizerMiner(BaseMiner):
+    def __init__(self, config):
+        super().__init__(config)
+        self.eval_architectures = [
+            {"input": 784, "hidden": 128, "output": 10},    # MNIST
+            {"input": 3072, "hidden": 256, "output": 10},   # CIFAR
+            {"vocab_size": 85, "embedding_dim": 384,        # Shakespeare
+                "num_heads": 6, "num_layers": 6}
+        ]
+
+    def create_model(self, individual, dataset_name):
+        set_seed(self.seed)
+        compiled_func = self.toolbox.compile(expr=individual)
+        model = get_model_for_dataset(dataset_name)
+        return model, TorchEvolvedOptimizer(
+            params=model.parameters(),
+            evolved_func=compiled_func
+        )
+
+
+    def create_evolved_optimizer(self, individual):
+        compiled_func = self.toolbox.compile(expr=individual)
+        return TorchEvolvedOptimizer(
+            params=self.current_model.parameters(),
+            evolved_func=compiled_func
+        )
+
+
+    @staticmethod
+    def safe_evaluate(func, outputs, labels):
+        try:
+            loss = func(outputs, labels)
+
+            if loss is None:
+                logging.error(f"Loss function returned None: {func}")
+                return torch.tensor(float("inf"), device=outputs.device)
+
+            if not torch.is_tensor(loss):
+                logging.error(f"Loss function didn't return a tensor: {type(loss)}")
+                return torch.tensor(float("inf"), device=outputs.device)
+
+            if not torch.isfinite(loss).all():
+                logging.warning(f"Non-finite loss detected: {loss}")
+                return torch.tensor(float("inf"), device=outputs.device)
+
+            if loss.ndim > 0:
+                loss = loss.mean()
+
+            return loss
+        except Exception as e:
+            logging.error(f"Error in loss calculation: {str(e)}")
+            # logging.error(traceback.format_exc())
+            return torch.tensor(float("inf"), device=outputs.device)
+
+    def train(self, model_and_opt, train_loader):
+        set_seed(self.seed)
+        model, optimizer = model_and_opt
+        
+        model.train()
+        for idx, (inputs, targets) in enumerate(train_loader):
+            inputs = inputs.to(self.device)
+            targets = targets.to(self.device)
+            if idx == self.config.Miner.training_iterations:
+                break
+            optimizer.zero_grad()
+            outputs = model(inputs)
+            targets_one_hot = torch.nn.functional.one_hot(
+                targets, num_classes=outputs.shape[-1]
+            ).float()
+            loss = F.cross_entropy(outputs, targets_one_hot)
+            loss.backward()
+            optimizer.step()
+
+    def evaluate(self, model_and_opt, val_loader):
+        set_seed(self.seed)
+        model, _ = model_and_opt
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for idx, (inputs, targets) in enumerate(val_loader):
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                if idx > self.config.Miner.evaluation_iterations:
+                    break
+                outputs = model(inputs)
+                if len(outputs.shape) == 3:
+                    _, predicted = outputs.max(dim=-1)
+                    total += targets.numel()  # Count all elements
+                    correct += predicted.eq(targets).sum().item()
+                else:
+                    _, predicted = outputs.max(1)
+                    total += targets.size(0)
+                    correct += predicted.eq(targets).sum().item()
+        return correct / total
+
+    
+class ParallelOptimizerMiner(BaseMiner):
+    def __init__(self):
+        raise NotImplementedError
 
 
 class ActivationMinerPool(ActivationMiner, BaseMiningPoolMiner):
@@ -1134,6 +1209,13 @@ class LossMinerPool(LossMiner, BaseMiningPoolMiner):
 class LossMinerHF(LossMiner, BaseHuggingFaceMiner):
     pass
 
+class OptimizerMinerPool(OptimizerMiner, BaseMiningPoolMiner):
+    pass
+
+
+class OptimizerMinerHF(OptimizerMiner, BaseHuggingFaceMiner):
+    pass
+
 
 class ParallelLossMinerPool(ParallelLossMiner, BaseMiningPoolMiner):
     pass
@@ -1141,6 +1223,16 @@ class ParallelLossMinerPool(ParallelLossMiner, BaseMiningPoolMiner):
 
 class ParallelLossMinerHF(ParallelLossMiner, BaseHuggingFaceMiner):
     pass
+
+
+
+class ParallelOptimizerMinerPool(ParallelOptimizerMiner, BaseMiningPoolMiner):
+    pass
+
+
+class ParallelOptimizerMinerHF(ParallelOptimizerMiner, BaseHuggingFaceMiner):
+    pass
+
 
 
 class SimpleMinerPool(SimpleMiner, BaseMiningPoolMiner):
@@ -1167,7 +1259,12 @@ class MinerFactory:
                 if core_count == 1:
                     return LossMinerPool(config)
                 else:
-                    return ParallelActivationMinerPool(config)
+                    return ParallelLossMinerPool(config)
+            elif miner_type == "optimizer":
+                if core_count == 1:
+                    return OptimizerMinerPool(config)
+                else:
+                    return ParallelOptimizerMinerPool(config)
         elif platform == "hf":
             if miner_type == "activation":
                 if core_count == 1:
@@ -1179,5 +1276,11 @@ class MinerFactory:
                     return LossMinerHF(config)
                 else:
                     return ParallelLossMinerHF(config)
+            elif miner_type == "optimizer":
+                if core_count == 1:
+                    return OptimizerMinerHF(config)
+                else:
+                    return ParallelOptimizerMinerHF(config)
 
         raise ValueError(f"Unknown miner type: {miner_type} or platform: {platform}")
+

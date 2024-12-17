@@ -1,11 +1,11 @@
 import bittensor as bt
 
 class BittensorConfig:
-    netuid = 49
-    wallet_name = "your_coldkey_name"
-    wallet_hotkey = "your_hotkey_name"
+    netuid = 100
+    wallet_name = "test_wallet_1"
+    wallet_hotkey = "test_hot_1"
     path = "~/.bittensor/wallets/"
-    network = "finney"  # or "finney" for mainnet
+    network = "test"  # or "finney" for mainnet
     epoch_length = 100
     #subtensor_chain_endpoint = bt.__finney_entrypoint__ #"ws://127.0.0.1:9944"  # local subtensor
 

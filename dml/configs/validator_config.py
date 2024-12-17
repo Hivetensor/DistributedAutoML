@@ -9,17 +9,50 @@ def constrained_decay(n: int, ratio: float = 5.0):
     return normalized_decay.tolist() 
 
 class ValidatorConfig:
-    dataset_names = ["cifar10", "shakespeare"]
-    validation_interval = 2000  # Interval between validations in seconds
-    validator_type = "loss"
-    top_k = 50  # Number of top miners to distribute scores to
-    min_score = 0.0  # Minimum score for miners not in the top-k
-    top_k_weight = constrained_decay(50, 5.0)
-    time_penalty_factor = 0.5
-    time_penalty_max_time = 7200  #1week
-    max_gene_size = 1024*20
-    seed = 42
-    training_iterations = 100
-    validation_iterations = 100
+    device = "cpu"
 
+    validation_interval = 20
+    validator_type = "loss"
+    top_k = 50
+    min_score = 0.0
+    top_k_weight = constrained_decay(50, 5.0)
     
+    # Dataset-specific settings
+    dataset_weights = {
+        "mnist": 1.0,
+        "cifar10": 1.5,
+        "cifar100": 2.0
+    }
+    
+    # Training settings
+    training_iterations = 300
+    # {
+    #     "mnist": 100,
+    #     "cifar10": 200,
+    #     "cifar100": 300
+    # }
+    
+    validation_iterations = 30
+    # {
+    #     "mnist": 10,
+    #     "cifar10": 20,
+    #     "cifar100": 30
+    # }
+    
+    # Resource limits
+    max_gene_size = 1024*20
+    time_penalty_factor = 0.5
+    time_penalty_max_time = 7200
+    architectures = {
+        "cifar10": [ "mlp" ],
+        "imagenette": [ "resnet", "mobilenet_v3", "efficientnet_v2" ],
+        "fgvc_aircraft": ["resnet", "mobilenet_v3", "efficientnet_v2"]
+    }
+    architectures_weights = {
+        "mlp":0.25,
+        "resnet":0.25,
+        "efficientnet_v2":0.25,
+        "mobilenet_v3":0.25,
+    }
+
+    seed = 42
