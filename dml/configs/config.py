@@ -3,6 +3,7 @@ from dml.configs.bittensor_config import BittensorConfig
 from dml.configs.miner_config import MinerConfig
 from dml.configs.validator_config import ValidatorConfig
 
+#TODO: Start using .env files
 class Config:
     def __init__(self):
         self.general = GeneralConfig()
