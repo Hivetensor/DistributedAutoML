@@ -486,6 +486,88 @@ def get_flowers102_loaders(
             sampler=val_sampler)
     )
 
+def get_inaturalist_mini_loaders(batch_size: int = 32, num_workers: int = 2, seed: int = 42) -> Tuple[DataLoader, DataLoader]:
+    """iNaturalist mini-subset dataset loaders with standard augmentation"""
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    train_dataset = datasets.INaturalist(
+        './data',
+        version='2021_mini',
+        target_type='super',
+        download=True,
+        transform=train_transform
+    )
+    
+    val_dataset = datasets.INaturalist(
+        './data', 
+        version='2021_mini',
+        target_type='super',
+        download=True,
+        transform=val_transform
+    )
+
+    set_seed(seed)
+    train_sampler = DeterministicSampler(len(train_dataset))
+    val_sampler = DeterministicSampler(len(val_dataset))
+    
+    return (
+        DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, worker_init_fn=seed_worker, sampler=train_sampler),
+        DataLoader(val_dataset, batch_size=batch_size, num_workers=num_workers, worker_init_fn=seed_worker, sampler=val_sampler)
+    )
+
+def get_food101_loaders(batch_size: int = 32, num_workers: int = 2, seed: int = 42) -> Tuple[DataLoader, DataLoader]:
+    """Food-101 dataset loaders with standard augmentation"""
+    train_transform = transforms.Compose([
+        transforms.RandomResizedCrop(224),
+        transforms.RandomHorizontalFlip(),
+        transforms.ColorJitter(0.4, 0.4, 0.4),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    val_transform = transforms.Compose([
+        transforms.Resize(256),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    train_dataset = datasets.Food101(
+        './data',
+        split='train',
+        download=True,
+        transform=train_transform
+    )
+    
+    val_dataset = datasets.Food101(
+        './data',
+        split='test',
+        download=True,
+        transform=val_transform
+    )
+
+    set_seed(seed)
+    train_sampler = DeterministicSampler(len(train_dataset))
+    val_sampler = DeterministicSampler(len(val_dataset))
+    
+    return (
+        DataLoader(train_dataset, batch_size=batch_size, num_workers=num_workers, worker_init_fn=seed_worker, sampler=train_sampler),
+        DataLoader(val_dataset, batch_size=batch_size, num_workers=num_workers, worker_init_fn=seed_worker, sampler=val_sampler)
+    )
+
 
 dataset_configs = {
         "mnist": {
@@ -541,6 +623,18 @@ dataset_configs = {
             "output_size": 10,  # Imagenette has 10 classes
             "weight": 1.0,
             "learning_rate": 0.01
+        },
+        "inaturalist_mini": {
+            "loader": get_inaturalist_mini_loaders,
+            "input_size": (3, 224, 224),
+            "output_size": 10,
+            "weight": 1.0
+        },
+        "food101": {
+            "loader": get_food101_loaders, 
+            "input_size": (3, 224, 224),
+            "output_size": 101,
+            "weight": 1.0
         }
     }
 

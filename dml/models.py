@@ -227,6 +227,29 @@ def get_efficientnet_v2_m(
     
     return model
 
+def get_convnext(num_classes: int = 1000, pretrained: bool = True) -> nn.Module:
+   """Returns ConvNeXt model"""
+   if pretrained:
+       model = models.convnext_base(weights='IMAGENET1K_V1')
+       if num_classes != 1000:
+           model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_classes)
+   else:
+       model = models.convnext_base(weights=None)
+       model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_classes)
+   return model
+
+def get_alexnet(num_classes: int = 1000, pretrained: bool = True) -> nn.Module:
+   """Returns AlexNet model"""
+   if pretrained:
+       model = models.alexnet(weights='IMAGENET1K_V1')
+       if num_classes != 1000:
+           model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_classes)
+   else:
+       model = models.alexnet(weights=None)
+       model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, num_classes)
+   return model
+
+
 # Dictionary mapping dataset names to their model creators
 ARCHITECTURE_MAP = {
     'mlp': get_mlp,
@@ -234,8 +257,13 @@ ARCHITECTURE_MAP = {
     'gpt': get_baby_gpt,
     'resnet': get_imagenet_model,  # Already generalized in original code
     'mobilenet_v3': get_mobilenet_v3_large,
-    'efficientnet_v2': get_efficientnet_v2_m
+    'efficientnet_v2': get_efficientnet_v2_m,
+    'convnext': get_convnext,
+   'alexnet': get_alexnet
 }
+
+
+
 
 def get_model_for_dataset(dataset_name: str, architecture: str = 'mlp', dataset_spec = None, **kwargs) -> nn.Module:
     """Get the appropriate model for a given dataset and architecture.

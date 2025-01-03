@@ -6,7 +6,7 @@ class EvaluatorConfig:
     llm_validation_steps = 100 #If not an LLM evaluates on whole val set.
 
     architectures = {
-        "cifar10": [ "mlp" ],
-        "imagenette": [ "resnet", "mobilenet_v3", "efficientnet_v2" ],
-        "fgvc_aircraft": ["resnet", "mobilenet_v3", "efficientnet_v2"]
+        "cifar10": [ "convnext", "alexnet" ],
+        "food101": [ "resnet", "convnext", "alexnet" ],
+        "inaturalist_mini": ["resnet", "convnext", "alexnet"]
     }
