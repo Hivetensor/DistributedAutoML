@@ -349,6 +349,10 @@ class TaskEvaluator:
             metrics = self.evaluator.train_and_evaluate(
                 model, loss_function, train_loader, val_loader, num_classes=100, metric_type="accuracy"
             )            
+        elif dataset == "food101": #FIXME This is an ugly hack fix it and load num_classes from the dataset spec 
+            metrics = self.evaluator.train_and_evaluate(
+                model, loss_function, train_loader, val_loader, num_classes=101, metric_type="accuracy"
+            )            
         else:
             metrics = self.evaluator.train_and_evaluate(
                 model, loss_function, train_loader, val_loader, metric_type="accuracy"
@@ -414,6 +418,10 @@ class TaskEvaluator:
             elif (dataset == "cifar100") or (dataset == "fgvc_aircraft"):
                 metrics = self.evaluator.train_and_evaluate(
                     model, loss_function, train_loader, val_loader, num_classes=100, metric_type="accuracy"
+                )
+            elif dataset == "food101": #FIXME This is an ugly hack fix it and load num_classes from the dataset spec 
+                metrics = self.evaluator.train_and_evaluate(
+                    model, loss_function, train_loader, val_loader, num_classes=101, metric_type="accuracy"
                 )
             else:
                 metrics = self.evaluator.train_and_evaluate(
