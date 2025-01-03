@@ -102,6 +102,8 @@ class LossEvaluator:
         
         optimizer.zero_grad()
         outputs = model(inputs)
+        print(num_classes)
+        print(max(targets))
         targets_one_hot = torch.nn.functional.one_hot(targets, num_classes=num_classes).float()
         try:
             loss = self.safe_evaluate(loss_function, outputs, targets_one_hot)
