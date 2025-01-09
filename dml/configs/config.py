@@ -1,12 +1,17 @@
 from dml.configs.general_config import GeneralConfig
+
 from dml.configs.bittensor_config import BittensorConfig
+from dml.configs.evaluator_config import EvaluatorConfig
 from dml.configs.miner_config import MinerConfig
 from dml.configs.validator_config import ValidatorConfig
 
 class Config:
     def __init__(self):
+        
         self.general = GeneralConfig()
+        
         self.Bittensor = BittensorConfig()
+        self.Evaluator = EvaluatorConfig()
         self.Miner = MinerConfig()
         self.Validator = ValidatorConfig()
 
@@ -25,6 +30,10 @@ class Config:
     @property
     def metrics_file(self):
         return self.general.metrics_file
+    
+    @property
+    def seed(self):
+        return self.general.seed
 
     def get_bittensor_config(self):
         return self.Bittensor.get_bittensor_config()

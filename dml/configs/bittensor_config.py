@@ -2,8 +2,8 @@ import bittensor as bt
 
 class BittensorConfig:
     netuid = 49
-    wallet_name = "your_coldkey_name"
-    wallet_hotkey = "your_hotkey_name"
+    wallet_name = "your_wallet"
+    wallet_hotkey = "your_hotkey"
     path = "~/.bittensor/wallets/"
     network = "finney"  # or "finney" for mainnet
     epoch_length = 100

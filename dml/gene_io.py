@@ -39,9 +39,9 @@ def safe_eval(expr):
         return expr
 
 
-def save_individual_to_json(individual):
+def save_individual_to_json(individual, hotkey=None):
     expr_str = str(individual)
-    return json.dumps({'expression': expr_str})
+    return json.dumps({'expression': expr_str, "hotkey":hotkey})
 
 def load_individual_from_json(data=None, pset=None, toolbox=None, filename = None):
     if filename is not None:
@@ -51,7 +51,11 @@ def load_individual_from_json(data=None, pset=None, toolbox=None, filename = Non
             data = json.loads(data)
         
     expr_str = data['expression']
+    try:
+        hotkey = data['hotkey']
+    except:
+        hotkey = None
     expr = SafePrimitiveTree.from_string(expr_str, pset, safe_eval)
     individual = creator.Individual(expr)
     func = toolbox.compile(expr=individual)
-    return individual, func, expr_str
+    return individual, func, expr_str, hotkey

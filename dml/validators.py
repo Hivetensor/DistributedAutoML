@@ -2,12 +2,16 @@ import heapq
 import logging
 import os
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 import time
 import math
+
+import torchvision.models as models
 from requests.exceptions import Timeout
 
 from typing import Any, Dict, Optional, Tuple
@@ -17,7 +21,7 @@ from deap import algorithms, base, creator, tools, gp
 from dml.configs.validator_config import constrained_decay
 from dml.hf_timeout import TimeoutHfApi
 from dml.data import load_datasets
-from dml.models import BaselineNN, EvolvableNN, EvolvedLoss, get_model_for_dataset
+from dml.models import BaselineNN, EvolvableNN, EvolvedLoss, get_model_for_dataset, ModelArchitectureSpec
 from dml.gene_io import load_individual_from_json
 from dml.ops import create_pset_validator
 from dml.record import GeneRecordManager
@@ -47,6 +51,8 @@ class BaseValidator(ABC):
         self.api = TimeoutHfApi()
         self.max_retries = 3
         self.retry_delay = 2
+
+        self.validation_round_count = 0
 
         set_seed(self.seed)
 
@@ -135,7 +141,7 @@ class BaseValidator(ABC):
         pass
 
     @abstractmethod
-    def create_model(self, individual):
+    def create_model(self, individual, dataset, architecture):
         pass
 
     @abstractmethod
@@ -143,15 +149,30 @@ class BaseValidator(ABC):
         pass
 
     def evaluate_individual(self, individual, datasets):
-        set_seed(self.seed)
-        accuracies = []
-        for dataset in datasets:
-            model = self.create_model(individual, dataset.name)
-            accuracy = self.evaluate(model, (dataset.train_loader, dataset.val_loader))
-            accuracies.append(accuracy)
-            del model
-
-        return torch.tensor(accuracies, device=self.device)
+        try:
+            set_seed(self.seed)
+            accuracies = []
+            for dataset in datasets:
+                
+                for architecture in self.config.Validator.architectures[dataset.name]:
+                    model = self.create_model(individual, dataset.name, architecture)
+                    model[0].to(self.config.device)
+                    accuracy = self.evaluate(model, (dataset.train_loader, dataset.val_loader))
+                    logging.info(f"Evaluating {dataset.name} on {architecture} result {accuracy}")
+                    accuracies.append(accuracy)
+                    del model
+            
+            accs = torch.tensor(accuracies, device=self.config.device)
+            avg_acc = accs.mean()
+            logging.info(f"Averaged accuracies {avg_acc}")
+            normalized_std = 1 - (accs.std()/avg_acc)
+            logging.info(f"STD accuracies {normalized_std}")
+            final_acc = 0.7 * avg_acc + 0.3 * normalized_std
+            logging.info(f"Generalization weighted score {final_acc}")
+            return final_acc
+        except Exception as e:
+            logging.info(f"Evaluation failed. Returning zero")
+            return torch.tensor(0.0)
 
     def compute_ranks(self, filtered_scores_dict):
         """
@@ -199,10 +220,52 @@ class BaseValidator(ABC):
         self.base_accuracy = self.evaluate(baseline_model, val_loader)
         logging.info(f"Baseline model accuracy: {self.base_accuracy:.4f}")
 
+    def calculate_topk_scores(self, score_dict: Dict[str, float], all_hotkeys: list) -> Dict[str, float]:
+        """
+        Calculate normalized top-k scores for miners.
+        
+        Args:
+            score_dict (Dict[str, float]): Dictionary of scores for each miner
+            all_hotkeys (list): List of all hotkeys to include in final dict (ensures consistent shape)
+            
+        Returns:
+            Dict[str, float]: Normalized scores dictionary with top-k weights applied
+        """
+        # Filter out zero scores
+        filtered_scores = {k: v for k, v in score_dict.items() if v != 0.0}
+        
+        # Initialize scores dict with all hotkeys
+        final_scores = {h: 0.0 for h in all_hotkeys}
+        
+        if filtered_scores:
+            # Sort hotkeys by scores
+            sorted_hotkeys = sorted(filtered_scores.keys(),
+                                  key=lambda h: filtered_scores[h],
+                                  reverse=True)
+            
+            # Assign top-k weights
+            top_k = self.config.Validator.top_k
+            top_k_weights = self.config.Validator.top_k_weight
+            
+            for i, hotkey in enumerate(sorted_hotkeys[:top_k]):
+                if i < len(top_k_weights):
+                    final_scores[hotkey] = top_k_weights[i]
+            
+            # Normalize scores
+            total_weight = sum(final_scores.values())
+            if total_weight > 0:
+                final_scores = {k: v / total_weight for k, v in final_scores.items()}
+        
+        return final_scores
+
     def validate_and_score(self):
-        self.scores = {}
+
         accuracy_scores = {}
         set_seed(self.seed)
+
+        start_time = time.time()
+        WEIGHT_SET_TIMEOUT = 1800  # 30 minutes in seconds
+        last_weight_set = start_time
 
         logging.info("Receiving genes from chain")
         self.bittensor_network.sync(lite=True)
@@ -215,19 +278,21 @@ class BaseValidator(ABC):
         self.cache_chain_metadata()
 
         # Track function signatures for this round
-        round_signatures = {}  # {func_signature: (block_number, hotkey)}
+        round_signatures = {}  # {func_signature: (block_number, hotkey)} #TO
         downloaded_genes = {}  # {hotkey: (gene, compiled_func, func_signature)}
-        datasets = load_datasets(self.config.Validator.dataset_names, batch_size=32)
+        datasets = load_datasets(self.config.Validator.architectures.keys(), batch_size=32)
+
+        temp_scores = {h: 0.0 for h in self.bittensor_network.metagraph.hotkeys}
+        validated_miners = set()
 
         # Single pass: download, collect signatures, and evaluate
         for hotkey_address in self.bittensor_network.metagraph.hotkeys:
-
-            chain_meta = self.chain_metadata_cache.get(hotkey_address)
+            logging.info(f"Checking hotkey {hotkey_address}")
+            current_time = time.time()
+            
+            chain_meta = self.chain_metadata_cache.get(hotkey_address) #username/repo_name:HASHOF(repo+sin(y)-cos(x))
             if not chain_meta:
-                accuracy_scores[hotkey_address] = torch.zeros(
-                    (len(self.config.Validator.dataset_names),),
-                    device=self.device,
-                )
+                accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                 continue
 
             should_download = False
@@ -241,25 +306,32 @@ class BaseValidator(ABC):
             if should_download:
                 gene = self.receive_gene_from_hf(chain_meta["repo"])
                 if gene is None:
-                    accuracy_scores[hotkey_address] = torch.zeros(
-                        (len(self.config.Validator.dataset_names),),
-                        device=self.device,
-                    )
+                    logging.info(f"Failed to download gene for {hotkey_address}. Score set to 0")
+                    accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                     continue
 
                 # Verify downloaded gene matches chain hash
                 # compiled_func = self.toolbox.compile(expr=gene[0])
+                deap_gene = gene[0]
                 compiled_func = gene[1]
-                computed_hash = compute_chain_hash(str(gene[2]))
+                func_str = gene[2]
+                computed_hash = compute_chain_hash(str(gene[2])+chain_meta["repo"])
                 if computed_hash != chain_meta["hash"]:
                     logging.warning(
                         f"Chain hash mismatch for {hotkey_address} gene {gene[2]} expected {chain_meta['hash']} found {computed_hash}"
                     )
-                    accuracy_scores[hotkey_address] = torch.zeros(
-                        (len(self.config.Validator.dataset_names),),
-                        device=self.device,
-                    )
+                    accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                     continue
+
+                # Verify downloaded gene's repo id matches chain hotkey
+
+                if hotkey_address != gene[3]:
+                    logging.warning(
+                        f"Repo hotkey mismatch for {hotkey_address} and hotkey {gene[3]}"
+                    )
+                    accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
+                    continue   
+                    
 
                 try:
                     func_signature = (
@@ -268,9 +340,11 @@ class BaseValidator(ABC):
                         )
                     )
                     downloaded_genes[hotkey_address] = (
-                        gene,
+                        deap_gene,
                         compiled_func,
+                        func_str,
                         func_signature,
+                        #FIXME issue in gene reading?
                     )
 
                     if func_signature:
@@ -293,45 +367,33 @@ class BaseValidator(ABC):
                                 logging.warning(
                                     f"Duplicate found. {existing_hotkey} is copying the gene used by {hotkey_address}"
                                 )
-                                accuracy_scores[existing_hotkey] = torch.zeros(
-                                    (len(self.config.Validator.dataset_names),),
-                                    device=self.device,
-                                )
+                                accuracy_scores[existing_hotkey] = torch.tensor(0.0, device=self.config.device)
                                 continue
 
                             else:
                                 logging.warning(
                                     f"Duplicate found. {hotkey_address} receives 0 score"
                                 )
-                                accuracy_scores[hotkey_address] = torch.zeros(
-                                    (len(self.config.Validator.dataset_names),),
-                                    device=self.device,
-                                )
+                                accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                                 continue
                     else:
                         logging.warning(
                             f"Failed to calculate the gene fingerprint {hotkey_address}"
                         )
-                        accuracy_scores[hotkey_address] = torch.zeros(
-                            (len(self.config.Validator.dataset_names),),
-                            device=self.device,
-                        )
+                        accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                         continue
 
                 except:
                     logging.warning(
                         f"Failed to calculate the gene fingerprint {hotkey_address}"
                     )
-                    accuracy_scores[hotkey_address] = torch.zeros(
-                        (len(self.config.Validator.dataset_names),),
-                        device=self.device,
-                    )
+                    accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                     continue
 
             else:
                 # Usexistinge  record for duplicate detection
                 if existing_record.get("gene_string") is not None:
-                    gene, func, gene_string = load_individual_from_json(
+                    gene, func, gene_string, repo_hotkey = load_individual_from_json(
                         data={"expression": existing_record["gene_string"]},
                         pset=self.pset,
                         toolbox=self.toolbox,
@@ -349,18 +411,24 @@ class BaseValidator(ABC):
                                     existing_record["block_number"],
                                     hotkey_address,
                                 )
-                                accuracy_scores[existing_hotkey] = torch.zeros(
-                                    (len(self.config.Validator.dataset_names),),
-                                    device=self.device,
-                                )
+                                accuracy_scores[existing_hotkey] = torch.tensor(0.0, device=self.config.device)
                                 logging.info(
                                     f"Existing record by {existing_hotkey} copying from {hotkey_address}. Fixing."
                                 )
-                            else:
-                                accuracy_scores[hotkey_address] = torch.zeros(
-                                    (len(self.config.Validator.dataset_names),),
-                                    device=self.device,
+
+                                logging.info(f"{hotkey_address} using cached score")
+                                accuracy_scores[hotkey_address] = torch.tensor(
+                                    existing_record["performance"], device=self.device
                                 )
+
+                                if hotkey_address not in validated_miners:
+                                    validated_miners.add(hotkey_address)
+                                    # Update temporary scores based on current validation results
+                                    if hotkey_address in accuracy_scores:
+                                        temp_scores[hotkey_address] = float(accuracy_scores[hotkey_address])
+
+                            else:
+                                accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                                 logging.info(
                                     f"Existing record by {hotkey_address} is a duplicate "
                                 )
@@ -370,20 +438,26 @@ class BaseValidator(ABC):
                                 existing_record["block_number"],
                                 hotkey_address,
                             )
+
+                            # Keep cached score
+                            logging.info(f"{hotkey_address} using cached score")
+                            accuracy_scores[hotkey_address] = torch.tensor(
+                                existing_record["performance"], device=self.device
+                            )
+                            
+                            if hotkey_address not in validated_miners:
+                                validated_miners.add(hotkey_address)
+                                # Update temporary scores based on current validation results
+                                if hotkey_address in accuracy_scores:
+                                    temp_scores[hotkey_address] = float(accuracy_scores[hotkey_address])
+
                 else:
                     logging.info(
                         f"{hotkey_address} is a cached failed gene. Assigning zero"
                     )
-                    accuracy_scores[hotkey_address] = torch.zeros(
-                        (len(self.config.Validator.dataset_names),),
-                        device=self.device,
-                    )
+                    accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
+                
 
-                # Keep cached score
-                logging.info(f"{hotkey_address} using cached score")
-                accuracy_scores[hotkey_address] = torch.tensor(
-                    existing_record["performance"], device=self.device
-                )
 
         # Process all genes and check for duplicates
         for hotkey_address in self.bittensor_network.metagraph.hotkeys:
@@ -392,9 +466,34 @@ class BaseValidator(ABC):
             ):  # Skip if already processed (cached or failed)
                 chain_meta = self.chain_metadata_cache[hotkey_address]
                 downloaded_data = downloaded_genes.get(hotkey_address)
-
+                
+                if self.validation_round_count < self.config.Validator.caching_rounds:
+                    current_time = time.time()
+                    
+                    if current_time - last_weight_set >= WEIGHT_SET_TIMEOUT:
+                        logging.warning("30-minute threshold reached. Setting intermediate weights.")
+                        
+                        # Set intermediate weights using top-k approach
+                        if validated_miners:
+                            filtered_temp_scores = {k: v for k, v in temp_scores.items() 
+                                                if k in validated_miners}
+                            
+                            intermediate_scores = self.calculate_topk_scores(
+                                filtered_temp_scores, 
+                                filtered_temp_scores.keys()
+                            )
+                            logging.info(f"Filtered temp scores: {filtered_temp_scores}")
+                            #if self.bittensor_network.should_set_weights():
+                            self.bittensor_network.set_weights(intermediate_scores)
+                            logging.info("Intermediate weights set successfully!")
+                        
+                        last_weight_set = current_time
+                    
+                logging.info(f"Evaluating Hotkey {hotkey_address}")
+                
                 if downloaded_data:
-                    gene, compiled_func, func_signature = downloaded_data
+                    gene, compiled_func, func_str, func_signature = downloaded_data
+                    #FIXME this fails to get the gene for the gene[x]
 
                     # Check for duplicates
                     if func_signature in round_signatures:
@@ -404,18 +503,22 @@ class BaseValidator(ABC):
                         if (
                             chain_meta["block_number"] > earliest_block
                             and hotkey_address != original_hotkey
-                        ):
+                        ): #redundant but harmless.
                             logging.warning(
                                 f"Duplicate function from {hotkey_address}. Original at block {earliest_block} by {original_hotkey}"
                             )
-                            accuracy_scores[hotkey_address] = torch.zeros(
-                                (len(self.config.Validator.dataset_names),),
-                                device=self.device,
-                            )
+                            accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
                         else:
                             # Evaluate original/unique submissions
-                            accuracy_score = self.evaluate_individual(gene[0], datasets)
-                            accuracy_scores[hotkey_address] = accuracy_score
+                            try:
+                                logging.info(f"No issues for {hotkey_address}. Evaluating on dataset+arch combos.")
+                                accuracy_score = self.evaluate_individual(gene, datasets)
+                                accuracy_scores[hotkey_address] = accuracy_score
+                            except Exception as e:
+                                logging.info(f"Evaluation failed for {hotkey_address}. Assigning 0 score. Miner Caused Error: {e}")
+                                accuracy_scores[hotkey_address] = torch.tensor(
+                                    0.0, device=self.device
+                                )
 
                     # Update gene record
                     self.gene_record_manager.add_record(
@@ -423,74 +526,37 @@ class BaseValidator(ABC):
                         chain_meta["hash"],
                         chain_meta["block_number"],
                         accuracy_scores[hotkey_address],
-                        expr=gene[0],
+                        expr=gene,
                         repo_name=chain_meta["repo"],
                         func=compiled_func,
-                        gene_string=gene[2],
+                        gene_string=func_str,
                     )
+                else:
+                    logging.info(f"Failed to get downloaded gene data for {hotkey_address}. Assigning 0 Score.")
+                    accuracy_scores[hotkey_address] = torch.tensor(0.0, device=self.config.device)
+
+                
+
+            
+            if hotkey_address not in validated_miners:
+                validated_miners.add(hotkey_address)
+                # Update temporary scores based on current validation results
+                if hotkey_address in accuracy_scores:
+                    temp_scores[hotkey_address] = float(accuracy_scores[hotkey_address])
+
 
         # Score computation and weight setting
-
         if accuracy_scores:
             #if len(accuracy_scores) > 0:
-            top_k = self.config.Validator.top_k
-            top_k_weights = self.config.Validator.top_k_weight
-            logging.info(f"Accuracy Scores: {accuracy_scores}")
+            float_scores = {k: v for k, v in accuracy_scores.items()}
+                
+            # Calculate final scores using top-k approach
+            self.scores = self.calculate_topk_scores(float_scores, self.bittensor_network.metagraph.hotkeys)
 
-            filtered_scores_dict = {}
+            current_time = time.time()
+            self.bittensor_network.set_weights(self.scores)
+            logging.info("Final weights set successfully!")
 
-            # Iterate over each key-value pair in the original dictionary
-            for k, v in accuracy_scores.items():
-                if isinstance(v, torch.Tensor):
-                    # For tensors, check if the sum is zero
-                    is_zero = torch.sum(v) == 0.0
-                else:
-                    # For non-tensors, check if the value is exactly 0.0
-                    is_zero = (v == 0.0) if isinstance(v, (int, float)) else False
-
-                # Only add the item to the new dictionary if it’s not zero
-                if not is_zero:
-                    filtered_scores_dict[k] = v
-
-            if len(filtered_scores_dict) > 0:
-                             
-                avg_ranks, detailed_ranks = self.compute_ranks(filtered_scores_dict)
-
-                # Sort hotkeys by average rank
-                sorted_hotkeys = sorted(avg_ranks.keys(), key=lambda h: avg_ranks[h])
-
-                # Initialize scores dict
-                self.scores = {h: 0.0 for h in self.bittensor_network.metagraph.hotkeys}
-
-                # Assign top-k weights to best performing miners
-                for i, hotkey in enumerate(sorted_hotkeys[:top_k]):
-                    if i < len(top_k_weights):
-                        self.scores[hotkey] = top_k_weights[i]
-
-                total_weight = sum(self.scores.values())
-
-                logging.info(f"Pre-normalization scores: {self.scores}")
-
-                if total_weight > 0:
-                    self.scores = {k: v / total_weight for k, v in self.scores.items()}
-
-                # Log performance details
-                for hotkey in accuracy_scores:
-                    if self.scores[hotkey] > 0:
-
-                        try:
-                            logging.info(f"Miner {hotkey}:")
-                            logging.info(f"  Final score: {self.scores[hotkey]:.4f}")
-                            logging.info(f"  Raw accuracies: {accuracy_scores[hotkey]}")
-                            logging.info(f"  Average rank: {avg_ranks[hotkey]:.2f}")
-                        except:
-                            pass
-
-                logging.info(f"Normalized scores: {self.scores}")
-
-                if self.bittensor_network.should_set_weights():
-                    self.bittensor_network.set_weights(self.scores)
-                    logging.info("Weights Setting attempted !")
 
     def check_registration(self):
         try:
@@ -572,6 +638,7 @@ class BaseValidator(ABC):
     def start_periodic_validation(self):
         while True:
             self.validate_and_score()
+            self.validation_round_count += 1
             logging.info(f"One round done, sleeping for: {self.interval}")
             time.sleep(self.interval)
 
@@ -645,11 +712,11 @@ class LossValidator(BaseValidator):
         )
         return train_loader, val_loader
 
-    def create_model(self, individual, dataset_name):
-        set_seed(self.seed)
-        return get_model_for_dataset(dataset_name).to(self.device), self.toolbox.compile(
+    def create_model(self, individual, dataset_name, architecture):
+        return get_model_for_dataset(dataset_name, architecture), self.toolbox.compile(
             expr=individual
         )
+        
 
     @staticmethod
     def safe_evaluate(func, outputs, labels):
@@ -678,24 +745,27 @@ class LossValidator(BaseValidator):
             return torch.tensor(float("inf"), device=outputs.device)
 
     def train(self, model_and_loss, train_loader):
-        set_seed(self.seed)
-        model, loss_function = model_and_loss
-        optimizer = torch.optim.Adam(model.parameters())
-        model.train()
-        for idx, (inputs, targets) in enumerate(train_loader):
-            inputs = inputs.to(self.device)
-            targets = targets.to(self.device)
-            if idx == self.config.Validator.training_iterations:
-                break
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            targets_one_hot = torch.nn.functional.one_hot(
-                targets, num_classes=outputs.shape[-1]
-            ).float()
-            loss = self.safe_evaluate(loss_function, outputs, targets_one_hot)
+        try:
+            set_seed(self.seed)
+            model, loss_function = model_and_loss
+            optimizer = torch.optim.Adam(model.parameters())
+            model.train()
+            for idx, (inputs, targets) in enumerate(train_loader):
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                if idx == self.config.Validator.training_iterations:
+                    break
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                targets_one_hot = torch.nn.functional.one_hot(
+                    targets, num_classes=outputs.shape[-1]
+                ).float()
+                loss = self.safe_evaluate(loss_function, outputs, targets_one_hot)
 
-            loss.backward()
-            optimizer.step()
+                loss.backward()
+                optimizer.step()
+        except Exception as e:
+            logging.error(f"TRAINING FAILED. REPORTED ERROR: {e}")
 
     def evaluate(self, model_and_loss, val_loader=None):
         try:
@@ -740,6 +810,181 @@ class LossValidator(BaseValidator):
         self.base_accuracy = self.evaluate((baseline_model, loss), val_loader)
         logging.info(f"Baseline model accuracy: {self.base_accuracy:.4f}")
 
+class LossValidatorEnhanced(LossValidator):
+    def __init__(self, config):
+        super().__init__(config)
+        self.architectures = self._setup_architectures()
+        self.datasets = load_datasets(config.Validator.architectures.keys())
+        
+    def _setup_architectures(self):
+        """Define standard architectures (ResNet, ViT, FNN) for each dataset"""
+        architectures = {
+            'mnist': [
+                ModelArchitectureSpec(
+                    name="resnet18",
+                    model_fn=lambda: models.resnet18(num_classes=10),
+                    input_size=28*28,
+                    output_size=10
+                ),
+                ModelArchitectureSpec(
+                    name="vit_tiny",
+                    model_fn=lambda: timm.create_model(
+                        'vit_tiny_patch16_224',
+                        num_classes=10,
+                        img_size=28
+                    ),
+                    input_size=28*28,
+                    output_size=10
+                ),
+                ModelArchitectureSpec(
+                    name="fnn",
+                    model_fn=lambda: nn.Sequential(
+                        nn.Flatten(),
+                        nn.Linear(28*28, 512),
+                        nn.ReLU(),
+                        nn.Linear(512, 256),
+                        nn.ReLU(),
+                        nn.Linear(256, 10)
+                    ),
+                    input_size=28*28,
+                    output_size=10
+                )
+            ],
+            'cifar10': [
+                ModelArchitectureSpec(
+                    name="resnet34",
+                    model_fn=lambda: models.resnet34(num_classes=10),
+                    input_size=32*32*3,
+                    output_size=10
+                ),
+                ModelArchitectureSpec(
+                    name="vit_small",
+                    model_fn=lambda: timm.create_model(
+                        'vit_small_patch16_224',
+                        num_classes=10,
+                        img_size=32
+                    ),
+                    input_size=32*32*3,
+                    output_size=10
+                ),
+                ModelArchitectureSpec(
+                    name="fnn",
+                    model_fn=lambda: nn.Sequential(
+                        nn.Flatten(),
+                        nn.Linear(32*32*3, 1024),
+                        nn.ReLU(),
+                        nn.Linear(1024, 512),
+                        nn.ReLU(),
+                        nn.Linear(512, 10)
+                    ),
+                    input_size=32*32*3,
+                    output_size=10
+                )
+            ],
+            'cifar100': [
+                ModelArchitectureSpec(
+                    name="resnet50",
+                    model_fn=lambda: models.resnet50(num_classes=100),
+                    input_size=32*32*3,
+                    output_size=100
+                ),
+                ModelArchitectureSpec(
+                    name="vit_base",
+                    model_fn=lambda: timm.create_model(
+                        'vit_base_patch16_224',
+                        num_classes=100,
+                        img_size=32
+                    ),
+                    input_size=32*32*3,
+                    output_size=100
+                ),
+                ModelArchitectureSpec(
+                    name="fnn",
+                    model_fn=lambda: nn.Sequential(
+                        nn.Flatten(),
+                        nn.Linear(32*32*3, 2048),
+                        nn.ReLU(),
+                        nn.Linear(2048, 1024),
+                        nn.ReLU(),
+                        nn.Linear(1024, 100)
+                    ),
+                    input_size=32*32*3,
+                    output_size=100
+                )
+            ]
+        }
+        return architectures
+
+class OptimizerValidator(BaseValidator):
+    def __init__(self, config):
+        super().__init__(config)
+        self.baseline_times = {}
+        self.baseline_scores = {}
+        self.time_weight = 0.3  # Weight for time vs accuracy tradeoff
+       
+    def evaluate_individual(self, individual, datasets):
+        scores = []
+        times = []
+        
+        for dataset in datasets:
+            # if dataset.name not in self.baseline_times:
+            #     self.measure_baseline(dataset)
+                
+            model = get_model_for_dataset(dataset.name)
+            model.to(self.device)
+            optimizer = self.create_evolved_optimizer(individual)
+
+            try:
+                # Time training
+                start_time = time.time()
+                model.train()
+                for epoch in range(self.config.Validator.training_epochs):
+                    for data, target in dataset.train_loader:
+                        data, target = data.to(self.device), target.to(self.device)
+                        optimizer.zero_grad()
+                        output = model(data)
+                        loss = F.cross_entropy(output, target)
+                        loss.backward()
+                        optimizer.step()
+                train_time = time.time() - start_time
+
+                # Evaluate
+                acc = self.evaluate(model, dataset.val_loader)
+                
+                # Compute normalized scores
+                time_ratio = self.baseline_times[dataset.name] / train_time
+                acc_ratio = acc / self.baseline_scores[dataset.name]
+                
+                # Combined score with time/accuracy tradeoff
+                score = (self.time_weight * time_ratio + 
+                        (1 - self.time_weight) * acc_ratio)
+                scores.append(score)
+
+            except Exception as e:
+                logging.error(f"Evaluation failed: {e}")
+                scores.append(0.0)
+
+        return torch.tensor(scores, device=self.device)
+
+    def measure_baseline(self, dataset):
+        model = get_model_for_dataset(dataset.name)
+        model.to(self.device)
+        optimizer = torch.optim.Adam(model.parameters())
+        
+        start_time = time.time()
+        model.train()
+        for epoch in range(self.config.Validator.training_epochs):
+            for data, target in dataset.train_loader:
+                data, target = data.to(self.device), target.to(self.device)
+                optimizer.zero_grad()
+                output = model(data)
+                loss = F.cross_entropy(output, target)
+                loss.backward()
+                optimizer.step()
+        
+        self.baseline_times[dataset.name] = time.time() - start_time
+        self.baseline_scores[dataset.name] = self.evaluate(model, dataset.val_loader)
+
 
 class ValidatorFactory:
     @staticmethod
@@ -749,5 +994,8 @@ class ValidatorFactory:
             return ActivationValidator(config)
         elif validator_type == "loss":
             return LossValidator(config)
+        elif validator_type == "optimizer":
+            return OptimizerValidator(config)
         else:
             raise ValueError(f"Unknown validator type: {validator_type}")
+
