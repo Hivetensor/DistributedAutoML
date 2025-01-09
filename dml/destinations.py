@@ -79,6 +79,28 @@ class PoolPushDestination(PushDestination):
         self.pool_url = pool_url
         self.wallet = wallet
         self.miner_operation = miner_operation
+        self.register_with_pool()
+
+    def register_with_pool(self) -> bool:
+        """Register miner with the pool"""
+        try:
+            response = self.make_authenticated_request(
+                endpoint="miners/register",
+                method="post",
+                params={},
+                data={"public_address": self.wallet.hotkey.ss58_address}
+            )
+
+            if not response or response.status_code != 200:
+                logging.error(f"Failed to register with pool: {response.text if response else 'No response'}")
+                return False
+
+            logging.info(f"Pool registration: {response.json().get('message', 'Success')}")
+            return True
+
+        except Exception as e:
+            logging.error(f"Critical error during pool registration: {str(e)}")
+            return False
 
     def _prepare_request_data(self, endpoint: str, **data):
         message_dict = {
@@ -126,15 +148,28 @@ class PoolPushDestination(PushDestination):
             logging.error(f"Request failed: {str(e)}")
             return None
 
-    def verify_signature(self, message: str, signature: str) -> bool:
-        try:
-            return (
-                    isinstance(signature, str)
-                    and len(signature) > 0
-                    and signature.startswith("0x")
-            )
-        except:
-            return False
+    def request_task(self, task_type: str):
+        """Get a task from the pool"""
+        response = self.make_authenticated_request(
+            "tasks/request",
+            method="post",
+            params={"task_type": task_type},
+            data={"public_address": self.wallet.hotkey.ss58_address}
+        )
+        return response.json() if response and response.status_code == 200 else None
+
+    def submit_result(self, task_type: str, batch_id: str, result: dict):
+        """Submit task result back to pool"""
+        endpoint = "tasks/submit_evolution" if task_type == "evolve" else "tasks/submit_evaluation"
+        response = self.make_authenticated_request(
+            endpoint,
+            method="post",
+            data={
+                "batch_id": batch_id,
+                **result
+            }
+        )
+        return response and response.status_code == 200
 
 
 class ChainPushDestination(PushDestination):
