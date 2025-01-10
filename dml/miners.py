@@ -342,7 +342,7 @@ class BaseMiner(ABC, PushMixin):
             f"Logged mutated child for generation {generation} to {log_filename}"
         )
 
-    def mine(self):
+    def mine(self, initial_population=None):
         #self.measure_baseline()
         datasets = load_datasets(
             self.config.Miner.architectures.keys(), 
@@ -353,18 +353,28 @@ class BaseMiner(ABC, PushMixin):
         checkpoint_file = os.path.join(LOCAL_STORAGE_PATH, "evolution_checkpoint.pkl")
 
         # Check if checkpoint exists
-        if os.path.exists(checkpoint_file):
-            population, hof, best_individual_all_time, start_generation = self.load_checkpoint(checkpoint_file)
-            if best_individual_all_time is not None:
-                self.best_solution["individual"] = best_individual_all_time
-                self.best_solution["fitness"] = best_individual_all_time.fitness.values[0]
-                self.best_solution["hash"] = self.get_hash(best_individual_all_time)
-            logging.info(f"Resuming from generation {start_generation}")
+        if initial_population:
+            population = []
+            for func in initial_population:
+                individual = creator.Individual(
+                    SafePrimitiveTree.from_string(
+                        func['function_code'], self.pset, safe_eval
+                    )
+                )
+                population.append(individual)
         else:
-            population = self.toolbox.population(n=self.config.Miner.population_size)
-            hof = tools.HallOfFame(1)
-            start_generation = 0
-            logging.info("Starting evolution from scratch")
+            if os.path.exists(checkpoint_file):
+                population, hof, best_individual_all_time, start_generation = self.load_checkpoint(checkpoint_file)
+                if best_individual_all_time is not None:
+                    self.best_solution["individual"] = best_individual_all_time
+                    self.best_solution["fitness"] = best_individual_all_time.fitness.values[0]
+                    self.best_solution["hash"] = self.get_hash(best_individual_all_time)
+                logging.info(f"Resuming from generation {start_generation}")
+            else:
+                population = self.toolbox.population(n=self.config.Miner.population_size)
+                hof = tools.HallOfFame(1)
+                start_generation = 0
+                logging.info("Starting evolution from scratch")
 
         stats = tools.Statistics(lambda ind: ind.fitness.values)
         stats.register("avg", np.mean)
@@ -556,7 +566,7 @@ class BaseMiningPoolMiner(BaseMiner):
             logging.error(f"Function evaluation failed: {e}")
             return 0.0
 
-    def mine(self):
+    def mine(self, initial_population=None):
         while True:
             task = self.pool_destination.request_task(self.miner_operation)
             if not task:
@@ -564,7 +574,7 @@ class BaseMiningPoolMiner(BaseMiner):
                 continue
 
             if self.miner_operation == "evolve":
-                evolved = super().mine()  # Use existing evolution logic
+                evolved = super().mine(initial_population=task['functions'])  # Use existing evolution logic
 
                 self.pool_destination.submit_result(
                     "evolve",
