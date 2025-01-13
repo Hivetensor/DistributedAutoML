@@ -4,34 +4,31 @@ import operator
 import os
 import queue
 import random
-import sys
 import time
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from multiprocessing import Queue, Process, Value
-from uuid import UUID
 
 import dill
 import numpy as np
-import requests
 import torch
 import torch.nn.functional as F
+from bittensor import MetadataError
+from deap import algorithms, base, creator, tools, gp
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
 from dml.chain.chain_manager import ChainManager
 from dml.data import load_datasets
-from dml.deap_individual import FitnessMax, Individual
-from dml.models import BaselineNN, EvolvableNN, get_model_for_dataset, TorchEvolvedOptimizer
-from dml.ops import create_pset
-from dml.gp_fix import SafePrimitiveTree
 from dml.destinations import (
     PushMixin,
-    HFChainPushDestination, PoolPushDestination,
+    HFChainPushDestination,
+    PoolPushDestination,
 )
-from dml.gene_io import save_individual_to_json, load_individual_from_json, safe_eval
+from dml.gene_io import safe_eval
 from dml.gp_fix import SafePrimitiveTree
+from dml.models import BaselineNN, TorchEvolvedOptimizer
 from dml.models import EvolvableNN, get_model_for_dataset
 from dml.ops import create_pset
 from dml.record import GeneRecordManager
@@ -109,9 +106,9 @@ class BaseMiner(ABC, PushMixin):
 
         # If last push failed and we haven't exceeded max attempts
         if (
-                not self.last_push_success
-                and self.best_solution["push_attempts"]
-                < self.best_solution["max_push_attempts"]
+            not self.last_push_success
+            and self.best_solution["push_attempts"]
+            < self.best_solution["max_push_attempts"]
         ):
             return True
 
@@ -161,8 +158,9 @@ class BaseMiner(ABC, PushMixin):
         current_fitness = individual.fitness.values[0]
         current_hash = self.get_hash(individual)
 
-        if (current_fitness > self.best_solution["fitness"]) \
-                and (current_hash != self.best_solution["hash"]):
+        if (current_fitness > self.best_solution["fitness"]) and (
+            current_hash != self.best_solution["hash"]
+        ):
             self.best_solution["individual"] = deepcopy(individual)
             self.best_solution["fitness"] = current_fitness
             self.best_solution["pushed"] = False
@@ -208,7 +206,6 @@ class BaseMiner(ABC, PushMixin):
             ),
         )
 
-
     def create_baseline_model(self):
         return BaselineNN(input_size=28 * 28, hidden_size=128, output_size=10).to(
             self.device
@@ -221,7 +218,7 @@ class BaseMiner(ABC, PushMixin):
             try:
                 self.train(model, train_loader=dataset.train_loader)
                 fitness += (
-                        self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
+                    self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
                 )
             except Exception as e:
                 logging.error(e)
@@ -230,15 +227,15 @@ class BaseMiner(ABC, PushMixin):
         return (fitness,)
 
     def save_checkpoint(
-            self,
-            population,
-            hof,
-            best_individual_all_time,
-            generation,
-            random_state,
-            torch_rng_state,
-            numpy_rng_state,
-            checkpoint_file,
+        self,
+        population,
+        hof,
+        best_individual_all_time,
+        generation,
+        random_state,
+        torch_rng_state,
+        numpy_rng_state,
+        checkpoint_file,
     ):
         checkpoint = {
             "population": population,
@@ -325,7 +322,9 @@ class BaseMiner(ABC, PushMixin):
                 try:
                     self.train(model, train_loader=dataset.train_loader)
                     fitness += (
-                        self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight * self.config.Miner.architectures_weights[architecture]
+                        self.evaluate(model, val_loader=dataset.val_loader)
+                        * dataset.weight
+                        * self.config.Miner.architectures_weights[architecture]
                     )
                 except Exception as e:
                     logging.error(e)
@@ -343,11 +342,11 @@ class BaseMiner(ABC, PushMixin):
         )
 
     def mine(self, initial_population=None):
-        #self.measure_baseline()
+        # self.measure_baseline()
         datasets = load_datasets(
-            self.config.Miner.architectures.keys(), 
+            self.config.Miner.architectures.keys(),
             batch_size=self.config.Miner.batch_size,
-            seed=self.config.Miner.seed
+            seed=self.config.Miner.seed,
         )
 
         checkpoint_file = os.path.join(LOCAL_STORAGE_PATH, "evolution_checkpoint.pkl")
@@ -358,20 +357,26 @@ class BaseMiner(ABC, PushMixin):
             for func in initial_population:
                 individual = creator.Individual(
                     SafePrimitiveTree.from_string(
-                        func['function_code'], self.pset, safe_eval
+                        func["function_code"], self.pset, safe_eval
                     )
                 )
                 population.append(individual)
         else:
             if os.path.exists(checkpoint_file):
-                population, hof, best_individual_all_time, start_generation = self.load_checkpoint(checkpoint_file)
+                population, hof, best_individual_all_time, start_generation = (
+                    self.load_checkpoint(checkpoint_file)
+                )
                 if best_individual_all_time is not None:
                     self.best_solution["individual"] = best_individual_all_time
-                    self.best_solution["fitness"] = best_individual_all_time.fitness.values[0]
+                    self.best_solution["fitness"] = (
+                        best_individual_all_time.fitness.values[0]
+                    )
                     self.best_solution["hash"] = self.get_hash(best_individual_all_time)
                 logging.info(f"Resuming from generation {start_generation}")
             else:
-                population = self.toolbox.population(n=self.config.Miner.population_size)
+                population = self.toolbox.population(
+                    n=self.config.Miner.population_size
+                )
                 hof = tools.HallOfFame(1)
                 start_generation = 0
                 logging.info("Starting evolution from scratch")
@@ -394,7 +399,9 @@ class BaseMiner(ABC, PushMixin):
             best_updated = self.update_best_solution(best_in_gen, generation)
 
             # Check if we should attempt a push
-            if (best_updated or not self.last_push_success) and self.should_attempt_push():
+            if (
+                best_updated or not self.last_push_success
+            ) and self.should_attempt_push():
                 self.attempt_push(self.best_solution["individual"], generation)
 
             # Select the next generation individuals
@@ -408,7 +415,9 @@ class BaseMiner(ABC, PushMixin):
                 if random.random() < 0.5:
                     if i + 1 < len(offspring):
                         child1, child2 = offspring[i], offspring[i + 1]
-                        safe_temp1, safe_temp2 = self.toolbox.clone(child1), self.toolbox.clone(child2)
+                        safe_temp1, safe_temp2 = self.toolbox.clone(
+                            child1
+                        ), self.toolbox.clone(child2)
                         self.toolbox.mate(child1, child2)
 
                         if child1.height > self.config.Miner.gp_tree_height:
@@ -488,7 +497,7 @@ class BaseHuggingFaceMiner(BaseMiner):
                 compute_hash_fn=lambda gene: self.gene_record_manager._compute_function_signature(
                     self.toolbox.compile(expr=gene)
                 ),
-                config=config
+                config=config,
             )
         )
 
@@ -499,7 +508,6 @@ class BaseMiningPoolMiner(BaseMiner):
         self.pool_destination = PoolPushDestination(
             config.Miner.pool_url,
             config.bittensor_network.wallet,
-            config.Miner.miner_operation
         )
         self.miner_operation = config.Miner.miner_operation
         self.wallet = config.bittensor_network.wallet
@@ -518,13 +526,15 @@ class BaseMiningPoolMiner(BaseMiner):
             datasets = load_datasets(
                 self.config.Miner.architectures.keys(),
                 batch_size=self.config.Miner.batch_size,
-                seed=self.config.Miner.seed
+                seed=self.config.Miner.seed,
             )
 
             # Test across each dataset and architecture combination
             for dataset in datasets:
                 for architecture in self.config.Miner.architectures[dataset.name]:
-                    model = get_model_for_dataset(dataset.name, architecture).to(self.device)
+                    model = get_model_for_dataset(dataset.name, architecture).to(
+                        self.device
+                    )
                     optimizer = torch.optim.Adam(model.parameters())
 
                     try:
@@ -537,7 +547,9 @@ class BaseMiningPoolMiner(BaseMiner):
 
                                 optimizer.zero_grad()
                                 outputs = model(inputs)
-                                targets_one_hot = F.one_hot(targets, outputs.shape[-1]).float()
+                                targets_one_hot = F.one_hot(
+                                    targets, outputs.shape[-1]
+                                ).float()
 
                                 try:
                                     loss = loss_function(outputs, targets_one_hot)
@@ -549,15 +561,23 @@ class BaseMiningPoolMiner(BaseMiner):
 
                         # Evaluation phase
                         score = self.evaluate(model, dataset.val_loader)
-                        weighted_score = score * dataset.weight * self.config.Miner.architectures_weights[architecture]
+                        weighted_score = (
+                            score
+                            * dataset.weight
+                            * self.config.Miner.architectures_weights[architecture]
+                        )
                         total_score += weighted_score
 
                     except Exception as e:
-                        logging.error(f"Evaluation failed for {dataset.name}/{architecture}: {e}")
+                        logging.error(
+                            f"Evaluation failed for {dataset.name}/{architecture}: {e}"
+                        )
                         continue
 
             # Normalize final score to 0-1 range
-            total_architectures = sum(len(archs) for archs in self.config.Miner.architectures.values())
+            total_architectures = sum(
+                len(archs) for archs in self.config.Miner.architectures.values()
+            )
             final_score = total_score / total_architectures
 
             return min(max(final_score, 0.0), 1.0)  # Ensure score is between 0-1
@@ -567,34 +587,33 @@ class BaseMiningPoolMiner(BaseMiner):
             return 0.0
 
     def mine(self, initial_population=None):
+        self.pool_destination.register_with_pool()
         while True:
-            task = self.pool_destination.request_task(self.miner_operation)
+            task = self.pool_destination.request_task(task_type=self.miner_operation)
             if not task:
-                time.sleep(60)  # Wait before retrying
+                time.sleep(60)
                 continue
 
             if self.miner_operation == "evolve":
-                evolved = super().mine(initial_population=task['functions'])  # Use existing evolution logic
+                evolved = super().mine(
+                    initial_population=task["functions"]
+                )  # Use existing evolution logic
 
                 self.pool_destination.submit_result(
                     "evolve",
                     task["batch_id"],
                     {
                         "evolved_function": str(evolved),
-                        "parent_functions": task["functions"]
-                    }
+                        "parent_functions": task["functions"],
+                    },
                 )
             else:
-                for function in task["functions"]:
-                    score = self.evaluate_function(function["function_code"])
-                    self.pool_destination.submit_result(
-                        "evaluate",
-                        task["batch_id"],
-                        {
-                            "function_id": function["id"],
-                            "score": score
-                        }
-                    )
+                score = self.evaluate_function(task["function_code"])
+                self.pool_destination.submit_result(
+                    "evaluate",
+                    task["batch_id"],
+                    {"function_id": task["id"], "score": score},
+                )
 
             time.sleep(5)  # Prevent hammering the server
 
@@ -620,15 +639,15 @@ class IslandMiner(BaseMiner):
             logging.warning(f"Setting migrants_per_round to {self.migrants_per_round}")
 
     def save_checkpoint(
-            self,
-            population,
-            generation,
-            local_best,
-            local_best_fitness,
-            random_state,
-            torch_rng_state,
-            numpy_rng_state,
-            checkpoint_file,
+        self,
+        population,
+        generation,
+        local_best,
+        local_best_fitness,
+        random_state,
+        torch_rng_state,
+        numpy_rng_state,
+        checkpoint_file,
     ):
         """Saves island checkpoint"""
         checkpoint = {
@@ -657,12 +676,12 @@ class IslandMiner(BaseMiner):
         return population, generation, local_best, local_best_fitness
 
     def run_island(
-            self,
-            island_id,
-            migration_in_queue,
-            migration_out_queue,
-            stats_queue,
-            global_best_queue,
+        self,
+        island_id,
+        migration_in_queue,
+        migration_out_queue,
+        stats_queue,
+        global_best_queue,
     ):
         random.seed(self.seed + island_id)
         torch.manual_seed(self.seed + island_id)
@@ -712,7 +731,7 @@ class IslandMiner(BaseMiner):
                         local_best_fitness = ind.fitness.values[0]
 
             if (
-                    local_best.fitness.values[0] > self.best_global_fitness.value
+                local_best.fitness.values[0] > self.best_global_fitness.value
             ):  # Read is atomic
                 global_best_queue.put((island_id, deepcopy(local_best)))
                 logging.info(
@@ -837,9 +856,9 @@ class IslandMiner(BaseMiner):
                             source_island, candidate = best_candidate
 
                             if (
-                                    best_overall is None
-                                    or candidate.fitness.values[0]
-                                    > best_overall.fitness.values[0]
+                                best_overall is None
+                                or candidate.fitness.values[0]
+                                > best_overall.fitness.values[0]
                             ):
                                 best_overall = deepcopy(candidate)
                                 with self.best_global_fitness.get_lock():
@@ -859,9 +878,9 @@ class IslandMiner(BaseMiner):
                         source_island, migrants = migration_out_queue.get_nowait()
                         for migrant in migrants:
                             if (
-                                    best_overall is None
-                                    or migrant.fitness.values[0]
-                                    > best_overall.fitness.values[0]
+                                best_overall is None
+                                or migrant.fitness.values[0]
+                                > best_overall.fitness.values[0]
                             ):
                                 best_overall = deepcopy(migrant)
                                 self.push_to_remote(
@@ -1154,16 +1173,20 @@ class SimpleMiner(BaseMiner):
         logging.info(f"Best fitness: {best_fitness}")
 
         return best_individual
-    
+
 
 class OptimizerMiner(BaseMiner):
     def __init__(self, config):
         super().__init__(config)
         self.eval_architectures = [
-            {"input": 784, "hidden": 128, "output": 10},    # MNIST
-            {"input": 3072, "hidden": 256, "output": 10},   # CIFAR
-            {"vocab_size": 85, "embedding_dim": 384,        # Shakespeare
-                "num_heads": 6, "num_layers": 6}
+            {"input": 784, "hidden": 128, "output": 10},  # MNIST
+            {"input": 3072, "hidden": 256, "output": 10},  # CIFAR
+            {
+                "vocab_size": 85,
+                "embedding_dim": 384,  # Shakespeare
+                "num_heads": 6,
+                "num_layers": 6,
+            },
         ]
 
     def create_model(self, individual, dataset_name):
@@ -1171,18 +1194,14 @@ class OptimizerMiner(BaseMiner):
         compiled_func = self.toolbox.compile(expr=individual)
         model = get_model_for_dataset(dataset_name)
         return model, TorchEvolvedOptimizer(
-            params=model.parameters(),
-            evolved_func=compiled_func
+            params=model.parameters(), evolved_func=compiled_func
         )
-
 
     def create_evolved_optimizer(self, individual):
         compiled_func = self.toolbox.compile(expr=individual)
         return TorchEvolvedOptimizer(
-            params=self.current_model.parameters(),
-            evolved_func=compiled_func
+            params=self.current_model.parameters(), evolved_func=compiled_func
         )
-
 
     @staticmethod
     def safe_evaluate(func, outputs, labels):
@@ -1213,7 +1232,7 @@ class OptimizerMiner(BaseMiner):
     def train(self, model_and_opt, train_loader):
         set_seed(self.seed)
         model, optimizer = model_and_opt
-        
+
         model.train()
         for idx, (inputs, targets) in enumerate(train_loader):
             inputs = inputs.to(self.device)
@@ -1252,7 +1271,7 @@ class OptimizerMiner(BaseMiner):
                     correct += predicted.eq(targets).sum().item()
         return correct / total
 
-    
+
 class ParallelOptimizerMiner(BaseMiner):
     def __init__(self):
         raise NotImplementedError
@@ -1289,6 +1308,7 @@ class LossMinerPool(LossMiner, BaseMiningPoolMiner):
 class LossMinerHF(LossMiner, BaseHuggingFaceMiner):
     pass
 
+
 class OptimizerMinerPool(OptimizerMiner, BaseMiningPoolMiner):
     pass
 
@@ -1305,14 +1325,12 @@ class ParallelLossMinerHF(ParallelLossMiner, BaseHuggingFaceMiner):
     pass
 
 
-
 class ParallelOptimizerMinerPool(ParallelOptimizerMiner, BaseMiningPoolMiner):
     pass
 
 
 class ParallelOptimizerMinerHF(ParallelOptimizerMiner, BaseHuggingFaceMiner):
     pass
-
 
 
 class SimpleMinerPool(SimpleMiner, BaseMiningPoolMiner):
@@ -1327,46 +1345,26 @@ class MinerFactory:
     @staticmethod
     def get_miner(config):
         miner_type = config.Miner.miner_type
-        platform = config.Miner.push_platform
         core_count = config.Miner.num_processes
-        operation = config.Miner.miner_operation
-        if platform == "pool":
-            if not hasattr(config.Miner, "operation_type"):
-                raise ValueError("When using pool, must specify operation_type ('evolve' or 'evaluate') in config")
+        stand_alone_mode = config.Miner.stand_alone_mode
 
-            if operation not in ["evolve", "evaluate"]:
-                raise ValueError("operation_type must be either 'evolve' or 'evaluate'")
-            if miner_type == "activation":
-                if core_count == 1:
-                    return ActivationMinerPool(config)
-                else:
-                    return ParallelActivationMinerPool(config)
-            elif miner_type == "loss":
-                if core_count == 1:
-                    return LossMinerPool(config)
-                else:
-                    return ParallelLossMinerPool(config)
-            elif miner_type == "optimizer":
-                if core_count == 1:
-                    return OptimizerMinerPool(config)
-                else:
-                    return ParallelOptimizerMinerPool(config)
-        elif platform == "hf":
-            if miner_type == "activation":
-                if core_count == 1:
-                    return ActivationMinerHF(config)
-                else:
-                    return ParallelActivationMinerHF(config)
-            elif miner_type == "loss":
-                if core_count == 1:
-                    return LossMinerHF(config)
-                else:
-                    return ParallelLossMinerHF(config)
-            elif miner_type == "optimizer":
-                if core_count == 1:
-                    return OptimizerMinerHF(config)
-                else:
-                    return ParallelOptimizerMinerHF(config)
+        if stand_alone_mode:
+            miner_classes = {
+                "activation": (ActivationMinerHF, ParallelActivationMinerHF),
+                "loss": (LossMinerHF, ParallelLossMinerHF),
+                "optimizer": (OptimizerMinerHF, ParallelOptimizerMinerHF),
+            }
+        else:
+            miner_classes = {
+                "activation": (ActivationMinerPool, ParallelActivationMinerPool),
+                "loss": (LossMinerPool, ParallelLossMinerPool),
+                "optimizer": (OptimizerMinerPool, ParallelOptimizerMinerPool),
+            }
 
-        raise ValueError(f"Unknown miner type: {miner_type} or platform: {platform}")
-
+        if miner_type in miner_classes:
+            selected_class = (
+                miner_classes[miner_type][1]
+                if core_count > 1
+                else miner_classes[miner_type][0]
+            )
+            return selected_class(config)
