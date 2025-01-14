@@ -106,9 +106,9 @@ class BaseMiner(ABC, PushMixin):
 
         # If last push failed and we haven't exceeded max attempts
         if (
-            not self.last_push_success
-            and self.best_solution["push_attempts"]
-            < self.best_solution["max_push_attempts"]
+                not self.last_push_success
+                and self.best_solution["push_attempts"]
+                < self.best_solution["max_push_attempts"]
         ):
             return True
 
@@ -159,7 +159,7 @@ class BaseMiner(ABC, PushMixin):
         current_hash = self.get_hash(individual)
 
         if (current_fitness > self.best_solution["fitness"]) and (
-            current_hash != self.best_solution["hash"]
+                current_hash != self.best_solution["hash"]
         ):
             self.best_solution["individual"] = deepcopy(individual)
             self.best_solution["fitness"] = current_fitness
@@ -218,7 +218,7 @@ class BaseMiner(ABC, PushMixin):
             try:
                 self.train(model, train_loader=dataset.train_loader)
                 fitness += (
-                    self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
+                        self.evaluate(model, val_loader=dataset.val_loader) * dataset.weight
                 )
             except Exception as e:
                 logging.error(e)
@@ -227,15 +227,15 @@ class BaseMiner(ABC, PushMixin):
         return (fitness,)
 
     def save_checkpoint(
-        self,
-        population,
-        hof,
-        best_individual_all_time,
-        generation,
-        random_state,
-        torch_rng_state,
-        numpy_rng_state,
-        checkpoint_file,
+            self,
+            population,
+            hof,
+            best_individual_all_time,
+            generation,
+            random_state,
+            torch_rng_state,
+            numpy_rng_state,
+            checkpoint_file,
     ):
         checkpoint = {
             "population": population,
@@ -322,9 +322,9 @@ class BaseMiner(ABC, PushMixin):
                 try:
                     self.train(model, train_loader=dataset.train_loader)
                     fitness += (
-                        self.evaluate(model, val_loader=dataset.val_loader)
-                        * dataset.weight
-                        * self.config.Miner.architectures_weights[architecture]
+                            self.evaluate(model, val_loader=dataset.val_loader)
+                            * dataset.weight
+                            * self.config.Miner.architectures_weights[architecture]
                     )
                 except Exception as e:
                     logging.error(e)
@@ -351,7 +351,6 @@ class BaseMiner(ABC, PushMixin):
 
         checkpoint_file = os.path.join(LOCAL_STORAGE_PATH, "evolution_checkpoint.pkl")
 
-        # Check if checkpoint exists
         if initial_population:
             population = []
             for func in initial_population:
@@ -400,7 +399,7 @@ class BaseMiner(ABC, PushMixin):
 
             # Check if we should attempt a push
             if (
-                best_updated or not self.last_push_success
+                    best_updated or not self.last_push_success
             ) and self.should_attempt_push():
                 self.attempt_push(self.best_solution["individual"], generation)
 
@@ -562,9 +561,9 @@ class BaseMiningPoolMiner(BaseMiner):
                         # Evaluation phase
                         score = self.evaluate(model, dataset.val_loader)
                         weighted_score = (
-                            score
-                            * dataset.weight
-                            * self.config.Miner.architectures_weights[architecture]
+                                score
+                                * dataset.weight
+                                * self.config.Miner.architectures_weights[architecture]
                         )
                         total_score += weighted_score
 
@@ -588,35 +587,27 @@ class BaseMiningPoolMiner(BaseMiner):
 
     def mine(self, initial_population=None):
         self.pool_destination.register_with_pool()
-        while True:
-            task = self.pool_destination.request_task(task_type=self.miner_operation)
-            if not task:
-                time.sleep(60)
-                continue
+        task = self.pool_destination.request_task(task_type=self.miner_operation)
+        if self.miner_operation == "evolve":
+            evolved = super().mine(
+                initial_population=task["functions"]
+            )
 
-            if self.miner_operation == "evolve":
-                evolved = super().mine(
-                    initial_population=task["functions"]
-                )  # Use existing evolution logic
-
-                self.pool_destination.submit_result(
-                    "evolve",
-                    task["batch_id"],
-                    {
-                        "evolved_function": str(evolved),
-                        "parent_functions": task["functions"],
-                    },
-                )
-            else:
-                score = self.evaluate_function(task["function_code"])
-                self.pool_destination.submit_result(
-                    "evaluate",
-                    task["batch_id"],
-                    {"function_id": task["id"], "score": score},
-                )
-
-            time.sleep(5)  # Prevent hammering the server
-
+            self.pool_destination.submit_result(
+                "evolve",
+                task["batch_id"],
+                {
+                    "evolved_function": str(evolved),
+                    "parent_functions": task["functions"],
+                },
+            )
+        else:
+            score = self.evaluate_function(task["function_code"])
+            self.pool_destination.submit_result(
+                "evaluate",
+                task["batch_id"],
+                {"function_id": task["id"], "score": score},
+            )
 
 class IslandMiner(BaseMiner):
     def __init__(self, config):
@@ -639,15 +630,15 @@ class IslandMiner(BaseMiner):
             logging.warning(f"Setting migrants_per_round to {self.migrants_per_round}")
 
     def save_checkpoint(
-        self,
-        population,
-        generation,
-        local_best,
-        local_best_fitness,
-        random_state,
-        torch_rng_state,
-        numpy_rng_state,
-        checkpoint_file,
+            self,
+            population,
+            generation,
+            local_best,
+            local_best_fitness,
+            random_state,
+            torch_rng_state,
+            numpy_rng_state,
+            checkpoint_file,
     ):
         """Saves island checkpoint"""
         checkpoint = {
@@ -676,12 +667,12 @@ class IslandMiner(BaseMiner):
         return population, generation, local_best, local_best_fitness
 
     def run_island(
-        self,
-        island_id,
-        migration_in_queue,
-        migration_out_queue,
-        stats_queue,
-        global_best_queue,
+            self,
+            island_id,
+            migration_in_queue,
+            migration_out_queue,
+            stats_queue,
+            global_best_queue,
     ):
         random.seed(self.seed + island_id)
         torch.manual_seed(self.seed + island_id)
@@ -731,7 +722,7 @@ class IslandMiner(BaseMiner):
                         local_best_fitness = ind.fitness.values[0]
 
             if (
-                local_best.fitness.values[0] > self.best_global_fitness.value
+                    local_best.fitness.values[0] > self.best_global_fitness.value
             ):  # Read is atomic
                 global_best_queue.put((island_id, deepcopy(local_best)))
                 logging.info(
@@ -856,9 +847,9 @@ class IslandMiner(BaseMiner):
                             source_island, candidate = best_candidate
 
                             if (
-                                best_overall is None
-                                or candidate.fitness.values[0]
-                                > best_overall.fitness.values[0]
+                                    best_overall is None
+                                    or candidate.fitness.values[0]
+                                    > best_overall.fitness.values[0]
                             ):
                                 best_overall = deepcopy(candidate)
                                 with self.best_global_fitness.get_lock():
@@ -878,9 +869,9 @@ class IslandMiner(BaseMiner):
                         source_island, migrants = migration_out_queue.get_nowait()
                         for migrant in migrants:
                             if (
-                                best_overall is None
-                                or migrant.fitness.values[0]
-                                > best_overall.fitness.values[0]
+                                    best_overall is None
+                                    or migrant.fitness.values[0]
+                                    > best_overall.fitness.values[0]
                             ):
                                 best_overall = deepcopy(migrant)
                                 self.push_to_remote(

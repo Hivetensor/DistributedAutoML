@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import sys
 import tempfile
 import time
 from abc import ABC, abstractmethod
@@ -108,7 +109,7 @@ class PoolPushDestination:
                 logging.error(
                     f"Failed to register with pool: {response.text if response else 'No response'}"
                 )
-                return False
+                sys.exit(1)
 
             logging.info(
                 f"Pool registration: {response.json().get('message', 'Success')}"
@@ -117,17 +118,21 @@ class PoolPushDestination:
 
         except Exception as e:
             logging.error(f"Critical error during pool registration: {str(e)}")
-            return False
+            sys.exit(1)
 
 
     def request_task(self, task_type: str):
         """Get a task from the pool"""
-        response = requests.post(
-            url=f"{self.pool_url}/tasks/{self.wallet.hotkey.ss58_address}/request",
-            json={"task_type": task_type},
-
+        try:
+            response = requests.post(
+                url=f"{self.pool_url}/tasks/{self.wallet.hotkey.ss58_address}/request",
+                json={"task_type": task_type},
         )
-        return response.json() if response and response.status_code == 200 else None
+            return response.json()
+        except Exception as e:
+            logging.error(f"Failed to request task from pool: {str(e)}")
+            sys.exit(1)
+
 
     def _prepare_request_data(self, endpoint: str, **data):
         message_dict = {"endpoint": endpoint, "timestamp": time.time(), "data": data}
