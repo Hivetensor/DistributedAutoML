@@ -141,15 +141,12 @@ class PoolPushDestination:
         )  # Deterministic serialization
 
         return {
-            "public_address": self.wallet.hotkey.ss58_address,
-            "signature": self.wallet.hotkey.sign(message.encode("utf-8")).hex(),
-            "message": message,
+            
         }
 
     def make_authenticated_request(
         self,
         endpoint: str,
-        params: Dict,
         method: str = "post",
         timeout: int = 30,
         **data,
@@ -160,7 +157,7 @@ class PoolPushDestination:
                 method=method.lower(),
                 url=f"{self.pool_url}/{endpoint}",
                 json=request_data,
-                params=params if method.lower() == "get" else None,
+                params={},
                 timeout=timeout,
             )
             if response.status_code != 200:
@@ -176,18 +173,32 @@ class PoolPushDestination:
             logging.error(f"Request failed: {str(e)}")
             return None
 
-    def submit_result(self, task_type: str, batch_id: str, result: dict):
-        """Submit task result back to pool"""
-        endpoint = (
-            "tasks/submit_evolution"
-            if task_type == "evolve"
-            else "tasks/submit_evaluation"
-        )
-        response = self.make_authenticated_request(
-            endpoint, method="post", data={"batch_id": batch_id, **result}
-        )
-        return response and response.status_code == 200
 
+    def submit_result(self, task_type: str, batch_id: str, result: dict):
+        public_address = self.wallet.hotkey.ss58_address
+
+        try:
+            timestamp = time.time()
+            response = requests.post(
+                url = f"{self.pool_url}/tasks/{public_address}/{batch_id}/submit_evolution/" if task_type == "evolve" else f"{self.pool_url}/tasks/{public_address}/{batch_id}/submit_evaluation",
+                
+                json={
+                    **result,
+                    "public_address": self.wallet.hotkey.ss58_address,
+                    "signature": self.wallet.hotkey.sign(str(timestamp)).hex(),
+                    "message": str(timestamp),
+                }
+
+            )
+            if response.status_code == 200:
+                logging.info(f"Request pool push success: {response.json()}")
+            else:
+                logging.warn(f"Request pool push failure: {response.json()}")
+            
+        except Exception as e:
+
+            logging.error(f"Request pool push failed: {e}")
+            
 
 class ChainPushDestination(PushDestination):
     def __init__(self, chain_manager):

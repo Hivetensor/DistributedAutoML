@@ -26,6 +26,8 @@ from dml.destinations import (
     HFChainPushDestination,
     PoolPushDestination,
 )
+from dml.deap_individual import Individual
+
 from dml.gene_io import safe_eval
 from dml.gp_fix import SafePrimitiveTree
 from dml.models import BaselineNN, TorchEvolvedOptimizer
@@ -173,7 +175,6 @@ class BaseMiner(ABC, PushMixin):
         return False
 
     def initialize_deap(self):
-        from dml.deap_individual import Individual
 
         self.toolbox = base.Toolbox()
         self.pset = create_pset()
@@ -341,7 +342,7 @@ class BaseMiner(ABC, PushMixin):
             f"Logged mutated child for generation {generation} to {log_filename}"
         )
 
-    def mine(self, initial_population=None):
+    def mine(self, initial_population=None, push_during_mining = True):
         # self.measure_baseline()
         datasets = load_datasets(
             self.config.Miner.architectures.keys(),
@@ -353,13 +354,15 @@ class BaseMiner(ABC, PushMixin):
 
         if initial_population:
             population = []
-            for func in initial_population:
-                individual = creator.Individual(
+            start_generation = 0
+            for func_string in initial_population:
+                individual = Individual(
                     SafePrimitiveTree.from_string(
-                        func["function_code"], self.pset, safe_eval
+                        func_string, self.pset, safe_eval
                     )
                 )
                 population.append(individual)
+            hof = tools.HallOfFame(1)
         else:
             if os.path.exists(checkpoint_file):
                 population, hof, best_individual_all_time, start_generation = (
@@ -398,10 +401,11 @@ class BaseMiner(ABC, PushMixin):
             best_updated = self.update_best_solution(best_in_gen, generation)
 
             # Check if we should attempt a push
-            if (
-                    best_updated or not self.last_push_success
-            ) and self.should_attempt_push():
-                self.attempt_push(self.best_solution["individual"], generation)
+            if push_during_mining:
+                if (
+                        best_updated or not self.last_push_success
+                ) and self.should_attempt_push() :
+                    self.attempt_push(self.best_solution["individual"], generation)
 
             # Select the next generation individuals
             offspring = self.toolbox.select(population, len(population))
@@ -588,9 +592,12 @@ class BaseMiningPoolMiner(BaseMiner):
     def mine(self, initial_population=None):
         self.pool_destination.register_with_pool()
         task = self.pool_destination.request_task(task_type=self.miner_operation)
+
         if self.miner_operation == "evolve":
+            prepared_fx_strings = [task_function['function'] for task_function in task["functions"]]
             evolved = super().mine(
-                initial_population=task["functions"]
+                initial_population=prepared_fx_strings,
+                push_during_mining = False
             )
 
             self.pool_destination.submit_result(
@@ -601,8 +608,9 @@ class BaseMiningPoolMiner(BaseMiner):
                     "parent_functions": task["functions"],
                 },
             )
+            
         else:
-            score = self.evaluate_function(task["function_code"])
+            score = self.evaluate_function(task["function"])
             self.pool_destination.submit_result(
                 "evaluate",
                 task["batch_id"],
