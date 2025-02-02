@@ -55,10 +55,37 @@ class BaseValidator(ABC):
 
         self.validation_round_count = 0
 
+        self.cache_interval = config.Validator.cache_interval
+        self.cache_check_interval = 12  # Check every 12 seconds
+        self.last_cache_block = 0
+        self.last_check_time = time.time()
+
         set_seed(self.seed)
 
         # Initialize DEAP
         self.initialize_deap()
+
+    def should_cache(self):
+        """
+        Determine if we should perform caching based on block number alignment
+        """
+        current_block = self.bittensor_network.subtensor.get_current_block()
+        
+        # Calculate the last modulo boundary
+        last_modulo_block = (current_block // self.cache_interval) * self.cache_interval
+        
+        # Check if we've cached since the last modulo boundary
+        should_cache = (
+            current_block >= last_modulo_block and  # We're past the boundary
+            self.last_cache_block < last_modulo_block  # Haven't cached since boundary
+        )
+        
+        if should_cache:
+            logging.info(f"Caching triggered at block {current_block}. Last modulo boundary: {last_modulo_block}")
+            self.last_cache_block = current_block
+            return True
+            
+        return False
 
     def initialize_deap(self):
         self.toolbox = base.Toolbox()
@@ -84,24 +111,34 @@ class BaseValidator(ABC):
         )
 
     def cache_chain_metadata(self):
-        """Cache chain metadata for all registered miners at start of validation round."""
-        self.chain_metadata_cache.clear()
-
-        for hotkey in tqdm(self.bittensor_network.metagraph.hotkeys):
-
-            try:
-                metadata = self.chain_manager.retrieve_solution_metadata(hotkey)
-                if metadata:
-                    self.chain_metadata_cache[hotkey] = {
-                        "repo": metadata.id.repo_name,
-                        "hash": metadata.id.solution_hash,
-                        "block_number": metadata.block,
-                    }
-            except Exception as e:
-                logging.error(f"Failed to cache chain metadata: {str(e)}")
-        logging.info(
-            f"Cached chain metadata for {len(self.chain_metadata_cache)} miners"
-        )
+        """
+        Cache chain metadata with improved logging and error handling
+        """
+        logging.info("CACHING")
+        try:
+            current_block = self.bittensor_network.subtensor.get_current_block()
+            logging.info(f"Starting metadata cache at block {current_block}")
+            
+            self.chain_metadata_cache.clear()
+            
+            for hotkey in tqdm(self.bittensor_network.metagraph.hotkeys):
+                try:
+                    metadata = self.chain_manager.retrieve_solution_metadata(hotkey)
+                    if metadata:
+                        self.chain_metadata_cache[hotkey] = {
+                            "repo": metadata.id.repo_name,
+                            "hash": metadata.id.solution_hash,
+                            "block_number": metadata.block,
+                        }
+                except Exception as e:
+                    logging.error(f"Failed to cache metadata for {hotkey}: {str(e)}")
+            
+            cache_size = len(self.chain_metadata_cache)
+            total_keys = len(self.bittensor_network.metagraph.hotkeys)
+            logging.info(f"Cache updated with {cache_size}/{total_keys} entries at block {current_block}")
+            
+        except Exception as e:
+            logging.error(f"Failed to update cache: {str(e)}")
 
     def check_chain_submission(
         self, func, hotkey: str
@@ -174,29 +211,38 @@ class BaseValidator(ABC):
                 avg_acc = final_accs.mean()
                 logging.info(f"Averaged final accuracies {avg_acc}")
                 
-                # Cross-dataset/architecture consistency (from original)
-                normalized_std = 1 - (final_accs.std()/avg_acc)
+                # Cross-dataset/architecture consistency with division by zero handling
+                eps = 1e-8
+                std = final_accs.std()
+                avg_abs = avg_acc.abs() if avg_acc != 0 else torch.tensor(0.0, device=self.config.device)
+                normalized_std = 1 - (std / (avg_acc + eps)) if avg_abs > eps else torch.tensor(0.0, device=self.config.device)
                 logging.info(f"STD accuracies {normalized_std}")
                 
-                # Learning stability: check if each model improves over time
-                is_learning = torch.all(accs[:, 1:] >= accs[:, :-1] - 0.02, dim=1)  # Per model
-                learning_ratio = is_learning.float().mean()  # Fraction of models that learn well
+                # Learning stability check
+                is_learning = torch.all(accs[:, 1:] >= accs[:, :-1] - 0.02, dim=1)
+                learning_ratio = is_learning.float().mean()
                 logging.info(f"Learning stability ratio {learning_ratio}")
                 
-                # Combined score
+                # Combined score with NaN check
                 final_acc = (
                     0.5 * avg_acc +           # Final performance
                     0.3 * normalized_std +    # Cross-dataset consistency
                     0.2 * learning_ratio      # Learning stability
                 )
+                # Replace NaN with 0.0 if any component is NaN
+                if torch.isnan(final_acc):
+                    final_acc = torch.tensor(0.0, device=self.config.device)
                 logging.info(f"Final weighted score {final_acc}")
-                return final_acc
+                return final_acc.item()  # Convert to Python float
             else:
-                return accs[0, -1]  # Just return final accuracy for single model
-                
+                final_acc = accs[0, -1]
+                if torch.isnan(final_acc):
+                    final_acc = torch.tensor(0.0, device=self.config.device)
+                return final_acc.item()  # Convert to Python float
+
         except Exception as e:
-            logging.info(f"Evaluation failed. Returning zero")
-            return torch.tensor(0.0)
+            logging.error(f"EVALUATION FAILED. Setting ZERO scores. REPORTED ERROR: {str(e)}")
+            return 0.0
 
     def compute_ranks(self, filtered_scores_dict):
         """
@@ -309,15 +355,13 @@ class BaseValidator(ABC):
         WEIGHT_SET_TIMEOUT = 1800  # 30 minutes in seconds
         last_weight_set = start_time
 
-        logging.info("Receiving genes from chain")
+        logging.info("Resynchronizing Metagraph")
         self.bittensor_network.sync(lite=True)
 
         # if not self.check_registration():
         #     logging.info("This validator is no longer registered on the chain.")
         #     return
 
-        # Cache chain metadata at start of validation round
-        self.cache_chain_metadata()
 
         # Track function signatures for this round
         round_signatures = {}  # {func_signature: (block_number, hotkey)} #TO
@@ -679,10 +723,36 @@ class BaseValidator(ABC):
 
     def start_periodic_validation(self):
         while True:
+            current_block = self.bittensor_network.subtensor.get_current_block()
+            current_time = time.time()
+
+            # Check if we should cache
+            if current_time - self.last_check_time >= self.cache_check_interval:
+                if self.should_cache():
+                    self.cache_chain_metadata()
+                self.last_check_time = current_time
+            
+            # Run validation round
             self.validate_and_score()
             self.validation_round_count += 1
-            logging.info(f"One round done, sleeping for: {self.interval}")
-            time.sleep(self.interval)
+            
+            # Sleep for the remainder of the interval
+            elapsed_time = time.time() - current_time
+            sleep_time = max(0, self.interval - elapsed_time)
+            
+            if sleep_time > self.cache_check_interval:
+                # Sleep in shorter intervals to check caching
+                remaining_sleep = sleep_time
+                while remaining_sleep > 0:
+                    sleep_chunk = min(self.cache_check_interval, remaining_sleep)
+                    time.sleep(sleep_chunk)
+                    remaining_sleep -= sleep_chunk
+                    
+                    # Check caching during sleep
+                    if self.should_cache():
+                        self.cache_chain_metadata()
+            else:
+                time.sleep(sleep_time)
 
 
 class ActivationValidator(BaseValidator):
