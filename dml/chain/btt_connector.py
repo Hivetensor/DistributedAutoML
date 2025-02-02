@@ -43,14 +43,14 @@ class BittensorNetwork:
                 cls.subtensor = bt.subtensor(config=config)
                 cls.metagraph = cls.subtensor.metagraph(config.netuid)
                 cls.config = config
-                if not cls.subtensor.is_hotkey_registered(netuid=config.netuid, hotkey_ss58=cls.wallet.hotkey.ss58_address) and not ignore_regs:
-                    logging.error(f"Wallet: {config.wallet} is not registered on netuid {config.netuid}. Please register the hotkey before trying again")
-                    exit()
-                    cls.uid = cls.metagraph.hotkeys.index(
-                        cls.wallet.hotkey.ss58_address
-                    )
-                else:
-                    cls.uid = 0
+                # if not cls.subtensor.is_hotkey_registered(netuid=config.netuid, hotkey_ss58=cls.wallet.hotkey.ss58_address) and not ignore_regs:
+                #     logging.error(f"Wallet: {config.wallet} is not registered on netuid {config.netuid}. Please register the hotkey before trying again")
+                #     exit()
+                #     cls.uid = cls.metagraph.hotkeys.index(
+                #         cls.wallet.hotkey.ss58_address
+                #     )
+                # else:
+                cls.uid = 0
                 cls.device="cpu"
                 cls.base_scores = torch.zeros(
                     cls.metagraph.n, dtype=torch.float32, device=cls.device
@@ -148,12 +148,13 @@ class BittensorNetwork:
         logging.info("Resynchronizing metagraph...")
         # Update the metagraph with the latest information from the network
         cls.metagraph = cls.subtensor.metagraph(cls.config.netuid, lite=lite)
-        if not cls.subtensor.is_hotkey_registered(netuid=cls.config.netuid, hotkey_ss58=cls.wallet.hotkey.ss58_address):
-            logging.error(f"Wallet: {cls.config.wallet} is not registered on netuid {cls.config.netuid}. Please register the hotkey before trying again")
-            exit()
-            cls.uid = cls.metagraph.hotkeys.index(
-                cls.wallet.hotkey.ss58_address
-            )
+        # if not cls.subtensor.is_hotkey_registered(netuid=cls.config.netuid, hotkey_ss58=cls.wallet.hotkey.ss58_address):
+        #     logging.error(f"Wallet: {cls.config.wallet} is not registered on netuid {cls.config.netuid}. Please register the hotkey before trying again")
+        #     exit()
+        #     cls.uid = cls.metagraph.hotkeys.index(
+        #         cls.wallet.hotkey.ss58_address
+        #     )
+        cls.uid = 0
 
         logging.info("Metagraph resynchronization complete.")
 
